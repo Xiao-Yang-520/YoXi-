@@ -38,67 +38,38 @@ jobs:
           gem install cocoapods
           pod setup
 
-      - name: Create simple test app
-        run: |
-          python -c "
-          import os
-          os.makedirs('/tmp/test_app', exist_ok=True)
-          with open('/tmp/test_app/main.py', 'w') as f:
-              f.write('import flet as ft\n')
-              f.write('def main(page: ft.Page):\n')
-              f.write('    page.add(ft.Text(\"Hello\"))\n')
-              f.write('ft.app(target=main)\n')
-          print('Test app created')
-          "
-          cat /tmp/test_app/main.py
-
-      - name: Build simple test app
-        run: |
-          mkdir -p /tmp/test_output
-          flet build ipa /tmp/test_app --output-dir /tmp/test_output --verbose 2>&1 | tee /tmp/test_build_log.txt
-          echo "Test exit code: $?"
-        env:
-          FLUTTER_SUPPRESS_ANALYTICS: "true"
-        continue-on-error: true
-
-      - name: Check test output
-        if: always()
-        run: |
-          echo "=== Test output dir ==="
-          ls -laR /tmp/test_output 2>/dev/null | head -100 || echo "No test output dir"
-          echo "=== Find test IPA ==="
-          find /tmp/test_output -name "*.ipa" 2>/dev/null || echo "No test IPA found"
-          echo "=== Test log last 50 lines ==="
-          tail -50 /tmp/test_build_log.txt 2>/dev/null || echo "No test log"
-
       - name: Build main app
         run: |
-          mkdir -p build_output
-          flet build ipa --output-dir build_output --verbose 2>&1 | tee build_log.txt
-          echo "Build exit code: $?"
+          echo "=== Starting build ==="
+          flet build --verbose ipa 2>&1 | tee build_log.txt
+          echo "=== Build exit code: ${PIPESTATUS[0]} ==="
         env:
           FLUTTER_SUPPRESS_ANALYTICS: "true"
 
       - name: Check build output
         if: always()
         run: |
-          echo "=== build_output dir ==="
-          ls -laR build_output 2>/dev/null | head -200 || echo "No build_output dir"
-          echo "=== Find IPA ==="
-          find build_output -name "*.ipa" 2>/dev/null || echo "No IPA found"
-          echo "=== Find APP ==="
-          find build_output -name "*.app" 2>/dev/null || echo "No APP found"
-          echo "=== Build log last 100 lines ==="
-          tail -100 build_log.txt 2>/dev/null || echo "No build log"
+          echo "=== Current dir ==="
+          pwd
+          echo "=== All files ==="
+          ls -la
+          echo "=== build dir ==="
+          ls -la build 2>/dev/null || echo "No build dir"
+          echo "=== build dir recursive ==="
+          find build -type f 2>/dev/null | head -100 || echo "No files"
+          echo "=== Find IPA anywhere ==="
+          find . -name "*.ipa" 2>/dev/null || echo "No IPA found"
+          echo "=== Find APP anywhere ==="
+          find . -name "*.app" 2>/dev/null || echo "No APP found"
+          echo "=== Build log last 150 lines ==="
+          tail -150 build_log.txt 2>/dev/null || echo "No build log"
 
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-logs
-          path: |
-            build_log.txt
-            /tmp/test_build_log.txt
+          name: build-log
+          path: build_log.txt
           if-no-files-found: ignore
 
       - name: Upload IPA
@@ -106,7 +77,7 @@ jobs:
         with:
           name: YoXi-Email-iOS
           path: |
-            build_output/**/*.ipa
+            build/**/*.ipa
             **/*.ipa
             **/*.app
           if-no-files-found: warn
