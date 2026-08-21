@@ -1,9 +1,41 @@
 import flet as ft
-import requests
+import urllib.request
 import json
 import os
 import time
 import threading
+
+# ── 用标准库 urllib 实现 requests 兼容层（避免 iOS 上 C 扩展编译失败）──
+class _Response:
+    def __init__(self, status_code, text, headers=None):
+        self.status_code = status_code
+        self.text = text
+        self.headers = headers or {}
+    def json(self):
+        return json.loads(self.text)
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise Exception(f"HTTP {self.status_code}")
+
+def _request(method, url, headers=None, json_data=None, timeout=10):
+    data = None
+    req_headers = dict(headers or {})
+    if json_data is not None:
+        data = json.dumps(json_data).encode('utf-8')
+        req_headers['Content-Type'] = 'application/json'
+    req = urllib.request.Request(url, data=data, headers=req_headers, method=method)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return _Response(resp.status, resp.read().decode('utf-8'), dict(resp.headers))
+
+class _Requests:
+    def get(self, url, headers=None, timeout=10):
+        return _request('GET', url, headers=headers, timeout=timeout)
+    def post(self, url, headers=None, json=None, timeout=10):
+        return _request('POST', url, headers=headers, json_data=json, timeout=timeout)
+    def patch(self, url, headers=None, json=None, timeout=10):
+        return _request('PATCH', url, headers=headers, json_data=json, timeout=timeout)
+
+requests = _Requests()
 
 # ─────────────────────── 配置加载 ───────────────────────
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
