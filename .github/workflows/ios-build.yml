@@ -33,43 +33,14 @@ jobs:
           gem install cocoapods
           pod setup
 
-      - name: Create test app with imports
+      - name: Clean up extra directories before build
         run: |
-          mkdir -p /tmp/test_app2
-          echo "import flet as ft" > /tmp/test_app2/main.py
-          echo "import json" >> /tmp/test_app2/main.py
-          echo "import urllib.request" >> /tmp/test_app2/main.py
-          echo "import threading" >> /tmp/test_app2/main.py
-          echo "import time" >> /tmp/test_app2/main.py
-          echo "import os" >> /tmp/test_app2/main.py
-          echo "import sys" >> /tmp/test_app2/main.py
-          echo "from datetime import datetime" >> /tmp/test_app2/main.py
-          echo "" >> /tmp/test_app2/main.py
-          echo "def main(page: ft.Page):" >> /tmp/test_app2/main.py
-          echo "    page.add(ft.Text('Test with imports'))" >> /tmp/test_app2/main.py
-          echo "    data = json.dumps({'test': 123})" >> /tmp/test_app2/main.py
-          echo "    page.add(ft.Text(data))" >> /tmp/test_app2/main.py
-          echo "" >> /tmp/test_app2/main.py
-          echo "ft.app(target=main)" >> /tmp/test_app2/main.py
-          echo "=== Test app content ==="
-          cat /tmp/test_app2/main.py
-
-      - name: Build test app with imports
-        run: |
-          cd /tmp/test_app2
-          flet build --verbose ipa 2>&1 | tee /tmp/test2_build_log.txt
-          echo "=== Test2 exit code: ${PIPESTATUS[0]} ==="
-        env:
-          FLUTTER_SUPPRESS_ANALYTICS: "true"
-        continue-on-error: true
-
-      - name: Check test2 output
-        if: always()
-        run: |
-          echo "=== Test2 build dir ==="
-          ls -laR /tmp/test_app2/build 2>/dev/null | head -50 || echo "No build dir"
-          echo "=== Test2 log last 60 lines ==="
-          tail -60 /tmp/test2_build_log.txt 2>/dev/null || echo "No log"
+          echo "=== Files before cleanup ==="
+          ls -la
+          echo "=== Removing kivy_app and flet_app ==="
+          rm -rf kivy_app flet_app
+          echo "=== Files after cleanup ==="
+          ls -la
 
       - name: Build main app
         run: |
@@ -99,26 +70,24 @@ jobs:
             echo "No xcarchive found"
           fi
 
-      - name: Check main output
+      - name: Check build output
         if: always()
         run: |
-          echo "=== Main build dir ==="
+          echo "=== build dir ==="
           ls -laR build 2>/dev/null | head -100 || echo "No build dir"
           echo "=== Find IPA ==="
           find . -name "*.ipa" 2>/dev/null
           echo "=== Find xcarchive ==="
           find . -name "*.xcarchive" -type d 2>/dev/null
-          echo "=== Main log last 80 lines ==="
-          tail -80 build_log.txt 2>/dev/null || echo "No log"
+          echo "=== Build log last 100 lines ==="
+          tail -100 build_log.txt 2>/dev/null || echo "No log"
 
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: all-logs
-          path: |
-            build_log.txt
-            /tmp/test2_build_log.txt
+          name: build-log
+          path: build_log.txt
           if-no-files-found: ignore
 
       - name: Upload IPA
