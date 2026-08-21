@@ -20,14 +20,12 @@ jobs:
       - name: 安装 Flet
         run: |
           pip install --upgrade pip
-          pip install flet==0.21.2
+          pip install flet==0.22.0
 
       - name: Python 语法检查
         run: |
           python -m py_compile main.py
           echo "语法检查通过"
-          echo "=== Python 版本 ==="
-          python --version
 
       - name: 设置 Flutter
         uses: subosito/flutter-action@v2
@@ -40,72 +38,32 @@ jobs:
           gem install cocoapods
           pod setup
 
-      - name: 测试简单应用打包
+      - name: 打包 iOS IPA
         run: |
-          # 先备份原文件
-          cp main.py main_backup.py
-          # 创建最简单的测试应用
-          cat > main.py << 'EOF'
-import flet as ft
-def main(page: ft.Page):
-    page.add(ft.Text("Hello"))
-ft.app(target=main)
-EOF
-          echo "=== 测试简单应用 ==="
-          cat main.py
-          echo "=== 开始打包测试 ==="
-
-      - name: 打包简单测试应用
-        run: |
-          flet build ipa --verbose 2>&1 | tee test_build_log.txt || echo "测试打包失败，退出码: $?"
-        env:
-          FLUTTER_SUPPRESS_ANALYTICS: "true"
-        continue-on-error: true
-
-      - name: 查看测试打包日志
-        if: always()
-        run: |
-          echo "=== 测试打包日志最后100行 ==="
-          tail -100 test_build_log.txt 2>/dev/null || echo "无日志"
-          echo "=== 查找错误 ==="
-          grep -i "error\|exception\|traceback\|failed" test_build_log.txt 2>/dev/null | tail -30 || echo "无错误信息"
-
-      - name: 恢复原文件并打包正式应用
-        run: |
-          cp main_backup.py main.py
-          rm -f main_backup.py
-          echo "=== 原文件恢复 ==="
-          head -5 main.py
-          echo "=== 开始正式打包 ==="
           flet build ipa --verbose 2>&1 | tee build_log.txt
         env:
           FLUTTER_SUPPRESS_ANALYTICS: "true"
 
-      - name: 查看正式打包日志
+      - name: 查看打包日志
         if: always()
         run: |
-          echo "=== 正式打包日志最后150行 ==="
-          tail -150 build_log.txt 2>/dev/null || echo "无日志"
-          echo "=== 查找错误 ==="
-          grep -i "error\|exception\|traceback\|failed\|SyntaxError\|ImportError" build_log.txt 2>/dev/null | tail -30 || echo "无错误信息"
+          echo "=== 日志最后200行 ==="
+          tail -200 build_log.txt 2>/dev/null || echo "无日志"
+          echo "=== 错误信息 ==="
+          grep -i "error\|exception\|traceback\|failed\|SyntaxError\|ImportError\|ModuleNotFound" build_log.txt 2>/dev/null | tail -40 || echo "无错误信息"
 
-      - name: 上传所有日志
+      - name: 上传日志
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: all-logs
-          path: |
-            build_log.txt
-            test_build_log.txt
+          name: build-log
+          path: build_log.txt
           if-no-files-found: ignore
 
-      - name: 查找 IPA 文件
+      - name: 查找 IPA
         if: always()
         run: |
-          echo "=== 查找 IPA ==="
-          find . -name "*.ipa" -type f 2>/dev/null || echo "未找到 IPA"
-          echo "=== build 目录 ==="
-          ls -la build/ 2>/dev/null || echo "build目录不存在"
+          find . -name "*.ipa" -o -name "*.app" 2>/dev/null || echo "无产物"
 
       - name: 上传 IPA
         uses: actions/upload-artifact@v4
