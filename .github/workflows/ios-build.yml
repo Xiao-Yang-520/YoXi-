@@ -22,15 +22,6 @@ jobs:
           pip install --upgrade pip
           pip install flet==0.22.0
 
-      - name: 查看 Flet 版本和帮助
-        run: |
-          echo "=== Flet 版本 ==="
-          flet --version
-          echo "=== build 帮助 ==="
-          flet build --help 2>&1
-          echo "=== build ipa 帮助 ==="
-          flet build ipa --help 2>&1
-
       - name: Python 语法检查
         run: |
           python -m py_compile main.py
@@ -47,37 +38,56 @@ jobs:
           gem install cocoapods
           pod setup
 
-      - name: 打包 iOS IPA
+      - name: 先测试最简单的应用
         run: |
-          flet build ipa --verbose 2>&1 | tee build_log.txt
+          mkdir -p /tmp/test_app
+          cat > /tmp/test_app/main.py << 'EOF'
+import flet as ft
+def main(page: ft.Page):
+    page.add(ft.Text("Hello"))
+ft.app(target=main)
+EOF
+          echo "=== 测试最简单应用 ==="
+          flet build ipa /tmp/test_app --output-dir /tmp/test_output --verbose 2>&1 | tee /tmp/test_build_log.txt
+          echo "=== 测试退出码: $? ==="
+          echo "=== 测试输出目录 ==="
+          ls -laR /tmp/test_output 2>/dev/null || echo "无输出目录"
+          echo "=== 查找测试 IPA ==="
+          find /tmp/test_output -name "*.ipa" 2>/dev/null || echo "未找到测试 IPA"
+        env:
+          FLUTTER_SUPPRESS_ANALYTICS: "true"
+        continue-on-error: true
+
+      - name: 打包正式应用（指定输出目录）
+        run: |
+          mkdir -p build_output
+          flet build ipa --output-dir build_output --verbose 2>&1 | tee build_log.txt
           echo "=== 打包退出码: $? ==="
         env:
           FLUTTER_SUPPRESS_ANALYTICS: "true"
 
-      - name: 查看构建产物目录
+      - name: 查看构建产物
         if: always()
         run: |
-          echo "=== 当前目录 ==="
-          pwd
-          echo "=== 所有文件 ==="
-          ls -la
-          echo "=== build 目录 ==="
-          ls -la build 2>/dev/null || echo "无 build 目录"
-          echo "=== build 目录递归 ==="
-          find build -type f 2>/dev/null | head -100 || echo "无文件"
+          echo "=== build_output 目录 ==="
+          ls -laR build_output 2>/dev/null | head -200 || echo "无 build_output 目录"
           echo "=== 查找 IPA ==="
-          find . -name "*.ipa" 2>/dev/null || echo "未找到 IPA"
+          find build_output -name "*.ipa" 2>/dev/null || echo "未找到 IPA"
           echo "=== 查找 APP ==="
-          find . -name "*.app" 2>/dev/null || echo "未找到 APP"
-          echo "=== 完整日志 ==="
-          cat build_log.txt 2>/dev/null || echo "无日志"
+          find build_output -name "*.app" 2>/dev/null || echo "未找到 APP"
+          echo "=== 日志最后100行 ==="
+          tail -100 build_log.txt 2>/dev/null || echo "无日志"
+          echo "=== 测试日志最后50行 ==="
+          tail -50 /tmp/test_build_log.txt 2>/dev/null || echo "无测试日志"
 
       - name: 上传日志
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: build-log
-          path: build_log.txt
+          path: |
+            build_log.txt
+            /tmp/test_build_log.txt
           if-no-files-found: ignore
 
       - name: 上传 IPA
@@ -85,7 +95,7 @@ jobs:
         with:
           name: YoXi-Email-iOS
           path: |
-            build/ios/ipa/*.ipa
+            build_output/**/*.ipa
             **/*.ipa
             **/*.app
           if-no-files-found: warn
