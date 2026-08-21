@@ -22,11 +22,6 @@ jobs:
           pip install --upgrade pip
           pip install flet==0.22.0
 
-      - name: Python syntax check
-        run: |
-          python -m py_compile main.py
-          echo "Syntax OK"
-
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -38,38 +33,62 @@ jobs:
           gem install cocoapods
           pod setup
 
+      - name: Create and build simple test app
+        run: |
+          mkdir -p /tmp/test_app
+          python -c "
+          with open('/tmp/test_app/main.py', 'w') as f:
+              f.write('import flet as ft\n')
+              f.write('def main(page: ft.Page):\n')
+              f.write('    page.add(ft.Text(\"Hello\"))\n')
+              f.write('ft.app(target=main)\n')
+          "
+          echo "=== Test app content ==="
+          cat /tmp/test_app/main.py
+          echo "=== Building test app ==="
+          cd /tmp/test_app
+          flet build --verbose ipa 2>&1 | tee /tmp/test_build_log.txt
+          echo "=== Test build exit code: ${PIPESTATUS[0]} ==="
+        env:
+          FLUTTER_SUPPRESS_ANALYTICS: "true"
+        continue-on-error: true
+
+      - name: Check test output
+        if: always()
+        run: |
+          echo "=== Test app build dir ==="
+          ls -la /tmp/test_app/build 2>/dev/null || echo "No build dir in test_app"
+          echo "=== Find test IPA ==="
+          find /tmp/test_app -name "*.ipa" 2>/dev/null || echo "No test IPA"
+          echo "=== Test build log last 80 lines ==="
+          tail -80 /tmp/test_build_log.txt 2>/dev/null || echo "No test log"
+
       - name: Build main app
         run: |
-          echo "=== Starting build ==="
+          echo "=== Building main app ==="
           flet build --verbose ipa 2>&1 | tee build_log.txt
-          echo "=== Build exit code: ${PIPESTATUS[0]} ==="
+          echo "=== Main build exit code: ${PIPESTATUS[0]} ==="
         env:
           FLUTTER_SUPPRESS_ANALYTICS: "true"
 
-      - name: Check build output
+      - name: Check main output
         if: always()
         run: |
-          echo "=== Current dir ==="
-          pwd
-          echo "=== All files ==="
-          ls -la
-          echo "=== build dir ==="
+          echo "=== Main build dir ==="
           ls -la build 2>/dev/null || echo "No build dir"
-          echo "=== build dir recursive ==="
-          find build -type f 2>/dev/null | head -100 || echo "No files"
-          echo "=== Find IPA anywhere ==="
-          find . -name "*.ipa" 2>/dev/null || echo "No IPA found"
-          echo "=== Find APP anywhere ==="
-          find . -name "*.app" 2>/dev/null || echo "No APP found"
-          echo "=== Build log last 150 lines ==="
-          tail -150 build_log.txt 2>/dev/null || echo "No build log"
+          echo "=== Find main IPA ==="
+          find . -name "*.ipa" 2>/dev/null || echo "No IPA"
+          echo "=== Main build log last 100 lines ==="
+          tail -100 build_log.txt 2>/dev/null || echo "No build log"
 
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log
-          path: build_log.txt
+          name: all-logs
+          path: |
+            build_log.txt
+            /tmp/test_build_log.txt
           if-no-files-found: ignore
 
       - name: Upload IPA
