@@ -908,10 +908,9 @@ class TempMailApp:
 
     def open_update_url(self):
         """打开更新下载链接"""
-        import webbrowser
         update_url = APP_CONFIG.get("update_url", "https://github.com/Xiao-Yang-520/YoXi-/releases")
         try:
-            webbrowser.open(update_url)
+            self.page.launch_url(update_url)
         except:
             pass
 

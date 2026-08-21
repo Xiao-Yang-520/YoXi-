@@ -20,7 +20,12 @@ jobs:
       - name: 安装 Flet
         run: |
           pip install --upgrade pip
-          pip install flet==0.21.2 requests
+          pip install flet==0.21.2
+
+      - name: Python 语法检查
+        run: |
+          python -m py_compile main.py
+          echo "语法检查通过"
 
       - name: 设置 Flutter
         uses: subosito/flutter-action@v2
@@ -35,14 +40,28 @@ jobs:
 
       - name: 打包 iOS IPA
         run: |
-          flet build ipa --verbose
+          set -o pipefail
+          flet build ipa --verbose 2>&1 | tee build_log.txt
         env:
           FLUTTER_SUPPRESS_ANALYTICS: "true"
 
+      - name: 上传构建日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build_log.txt
+          if-no-files-found: ignore
+
       - name: 查找 IPA 文件
+        if: always()
         run: |
-          find . -name "*.ipa" -type f
+          echo "=== 查找 IPA ==="
+          find . -name "*.ipa" -type f 2>/dev/null || echo "未找到 IPA"
+          echo "=== build 目录 ==="
           ls -la build/ 2>/dev/null || echo "build目录不存在"
+          echo "=== 所有产物 ==="
+          find . -name "*.app" -o -name "*.ipa" 2>/dev/null || echo "无产物"
 
       - name: 上传 IPA
         uses: actions/upload-artifact@v4
