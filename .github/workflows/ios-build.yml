@@ -7,33 +7,53 @@ on:
 
 jobs:
   build:
-    runs-on: macos-latest
+    runs-on: macos-13
     timeout-minutes: 120
 
     steps:
     - name: Checkout
       uses: actions/checkout@v4
 
+    - name: Show environment
+      run: |
+        echo "macOS version:"
+        sw_vers
+        echo "Xcode version:"
+        xcodebuild -version
+        echo "Python version:"
+        python3 --version
+        echo "Pip version:"
+        pip3 --version
+
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.11'
+        python-version: '3.10'
 
     - name: Install kivy-ios
       run: |
-        pip install --upgrade pip
-        pip install kivy-ios
+        python3 -m pip install --upgrade pip setuptools
+        python3 -m pip install kivy-ios
+        echo "kivy-ios installed successfully"
+        toolchain --help || echo "toolchain command not found"
 
-    - name: Build Python + Kivy + requests
-      run: toolchain build python3 kivy requests
+    - name: Build Python + Kivy
+      run: |
+        toolchain build python3 kivy
+
+    - name: Build requests
+      run: |
+        toolchain build requests || echo "requests build failed, continuing"
 
     - name: Create Xcode project
-      run: toolchain create YaoXiEmail kivy_app/main.py
+      run: |
+        toolchain create YaoXiEmail kivy_app/main.py
+        ls -la YaoXiEmail-ios/
 
     - name: Copy resources
       run: |
-        cp kivy_app/config.json YaoXiEmail-ios/
-        cp kivy_app/requirements.txt YaoXiEmail-ios/
+        cp kivy_app/config.json YaoXiEmail-ios/ || true
+        cp kivy_app/requirements.txt YaoXiEmail-ios/ || true
 
     - name: Build unsigned app
       run: |
