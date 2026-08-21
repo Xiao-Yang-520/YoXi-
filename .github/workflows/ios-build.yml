@@ -44,13 +44,20 @@ jobs:
         env:
           FLUTTER_SUPPRESS_ANALYTICS: "true"
 
-      - name: 查看打包日志
+      - name: 查看构建产物目录
         if: always()
         run: |
-          echo "=== 日志最后200行 ==="
-          tail -200 build_log.txt 2>/dev/null || echo "无日志"
-          echo "=== 错误信息 ==="
-          grep -i "error\|exception\|traceback\|failed\|SyntaxError\|ImportError\|ModuleNotFound" build_log.txt 2>/dev/null | tail -40 || echo "无错误信息"
+          echo "=== 当前目录 ==="
+          pwd
+          ls -la
+          echo "=== build 目录 ==="
+          find build -type f 2>/dev/null | head -100 || echo "无 build 目录"
+          echo "=== 查找 IPA ==="
+          find . -name "*.ipa" -type f 2>/dev/null || echo "未找到 IPA"
+          echo "=== 查找 APP ==="
+          find . -name "*.app" -type d 2>/dev/null || echo "未找到 APP"
+          echo "=== 日志最后100行 ==="
+          tail -100 build_log.txt 2>/dev/null || echo "无日志"
 
       - name: 上传日志
         if: always()
@@ -60,16 +67,12 @@ jobs:
           path: build_log.txt
           if-no-files-found: ignore
 
-      - name: 查找 IPA
-        if: always()
-        run: |
-          find . -name "*.ipa" -o -name "*.app" 2>/dev/null || echo "无产物"
-
       - name: 上传 IPA
         uses: actions/upload-artifact@v4
         with:
           name: YoXi-Email-iOS
           path: |
+            build/ios/ipa/*.ipa
             **/*.ipa
             **/*.app
           if-no-files-found: warn
