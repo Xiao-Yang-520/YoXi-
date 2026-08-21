@@ -9,88 +9,99 @@ jobs:
   build-ios:
     runs-on: macos-latest
     steps:
-      - name: 检出代码
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: 设置 Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: 安装 Flet
+      - name: Install Flet
         run: |
           pip install --upgrade pip
           pip install flet==0.22.0
 
-      - name: Python 语法检查
+      - name: Python syntax check
         run: |
           python -m py_compile main.py
-          echo "语法检查通过"
+          echo "Syntax OK"
 
-      - name: 设置 Flutter
+      - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.24.0'
           channel: 'stable'
 
-      - name: 安装 CocoaPods
+      - name: Install CocoaPods
         run: |
           gem install cocoapods
           pod setup
 
-      - name: 先测试最简单的应用
+      - name: Create simple test app
         run: |
-          mkdir -p /tmp/test_app
-          cat > /tmp/test_app/main.py << 'EOF'
-import flet as ft
-def main(page: ft.Page):
-    page.add(ft.Text("Hello"))
-ft.app(target=main)
-EOF
-          echo "=== 测试最简单应用 ==="
+          python -c "
+          import os
+          os.makedirs('/tmp/test_app', exist_ok=True)
+          with open('/tmp/test_app/main.py', 'w') as f:
+              f.write('import flet as ft\n')
+              f.write('def main(page: ft.Page):\n')
+              f.write('    page.add(ft.Text(\"Hello\"))\n')
+              f.write('ft.app(target=main)\n')
+          print('Test app created')
+          "
+          cat /tmp/test_app/main.py
+
+      - name: Build simple test app
+        run: |
+          mkdir -p /tmp/test_output
           flet build ipa /tmp/test_app --output-dir /tmp/test_output --verbose 2>&1 | tee /tmp/test_build_log.txt
-          echo "=== 测试退出码: $? ==="
-          echo "=== 测试输出目录 ==="
-          ls -laR /tmp/test_output 2>/dev/null || echo "无输出目录"
-          echo "=== 查找测试 IPA ==="
-          find /tmp/test_output -name "*.ipa" 2>/dev/null || echo "未找到测试 IPA"
+          echo "Test exit code: $?"
         env:
           FLUTTER_SUPPRESS_ANALYTICS: "true"
         continue-on-error: true
 
-      - name: 打包正式应用（指定输出目录）
+      - name: Check test output
+        if: always()
+        run: |
+          echo "=== Test output dir ==="
+          ls -laR /tmp/test_output 2>/dev/null | head -100 || echo "No test output dir"
+          echo "=== Find test IPA ==="
+          find /tmp/test_output -name "*.ipa" 2>/dev/null || echo "No test IPA found"
+          echo "=== Test log last 50 lines ==="
+          tail -50 /tmp/test_build_log.txt 2>/dev/null || echo "No test log"
+
+      - name: Build main app
         run: |
           mkdir -p build_output
           flet build ipa --output-dir build_output --verbose 2>&1 | tee build_log.txt
-          echo "=== 打包退出码: $? ==="
+          echo "Build exit code: $?"
         env:
           FLUTTER_SUPPRESS_ANALYTICS: "true"
 
-      - name: 查看构建产物
+      - name: Check build output
         if: always()
         run: |
-          echo "=== build_output 目录 ==="
-          ls -laR build_output 2>/dev/null | head -200 || echo "无 build_output 目录"
-          echo "=== 查找 IPA ==="
-          find build_output -name "*.ipa" 2>/dev/null || echo "未找到 IPA"
-          echo "=== 查找 APP ==="
-          find build_output -name "*.app" 2>/dev/null || echo "未找到 APP"
-          echo "=== 日志最后100行 ==="
-          tail -100 build_log.txt 2>/dev/null || echo "无日志"
-          echo "=== 测试日志最后50行 ==="
-          tail -50 /tmp/test_build_log.txt 2>/dev/null || echo "无测试日志"
+          echo "=== build_output dir ==="
+          ls -laR build_output 2>/dev/null | head -200 || echo "No build_output dir"
+          echo "=== Find IPA ==="
+          find build_output -name "*.ipa" 2>/dev/null || echo "No IPA found"
+          echo "=== Find APP ==="
+          find build_output -name "*.app" 2>/dev/null || echo "No APP found"
+          echo "=== Build log last 100 lines ==="
+          tail -100 build_log.txt 2>/dev/null || echo "No build log"
 
-      - name: 上传日志
+      - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log
+          name: build-logs
           path: |
             build_log.txt
             /tmp/test_build_log.txt
           if-no-files-found: ignore
 
-      - name: 上传 IPA
+      - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
           name: YoXi-Email-iOS
