@@ -497,12 +497,10 @@ class TabButton(BoxLayout):
         self._touch_down = False
 
         self.emoji_label = Label(
-            text=emoji_text, font_size=sp(22),
+            text=emoji_text, font_size=sp(20), bold=True,
             halign="center", valign="center", size_hint_y=0.6,
+            color=IOS_DARK,
         )
-        emoji_font = "C:/Windows/Fonts/seguiemj.ttf"
-        if os.path.exists(emoji_font):
-            self.emoji_label.font_name = emoji_font
 
         self.text_label = Label(
             text=label_text, font_size=sp(11), bold=True,
@@ -835,10 +833,10 @@ class TempMailApp(App):
         self.tab_bar.bind(pos=self._update_tab_bg, size=self._update_tab_bg)
 
         self.tab_buttons = {}
-        tabs = [("email", "📧", "邮箱")]
+        tabs = [("email", "✉", "邮箱")]
         if APP_CONFIG.get("enable_phone_tab", True):
-            tabs.append(("phone", "📱", "号码"))
-        tabs.append(("me", "👤", "我的"))
+            tabs.append(("phone", "☎", "号码"))
+        tabs.append(("me", "☺", "我的"))
         for key, emoji, label in tabs:
             btn = TabButton(
                 emoji_text=emoji,
@@ -980,23 +978,13 @@ class TempMailApp(App):
         nav.add_widget(title)
 
         # 用户卡片
-        user_card = BoxLayout(orientation="vertical", size_hint_y=None, height=dp(130),
-                              padding=[dp(20), dp(22), dp(20), dp(22)], spacing=dp(8))
+        user_card = BoxLayout(orientation="vertical", size_hint_y=None, height=dp(100),
+                              padding=[dp(20), dp(16), dp(20), dp(16)], spacing=dp(6))
         with user_card.canvas.before:
-            Color(0, 0, 0, 0.06)
-            uc_shadow = RoundedRectangle(
-                pos=(user_card.x + dp(2), user_card.y - dp(3)),
-                size=(user_card.width - dp(4), user_card.height),
-                radius=[dp(16)]
-            )
             Color(*WHITE)
-            uc_bg = RoundedRectangle(pos=user_card.pos, size=user_card.size, radius=[dp(16)])
-        user_card.bind(pos=lambda i, v: (setattr(uc_bg, 'pos', v), setattr(uc_bg, 'size', v),
-                                           setattr(uc_shadow, 'pos', (i.x + dp(2), i.y - dp(3))),
-                                           setattr(uc_shadow, 'size', (i.width - dp(4), i.height))),
-                        size=lambda i, v: (setattr(uc_bg, 'pos', i.pos), setattr(uc_bg, 'size', v),
-                                           setattr(uc_shadow, 'pos', (i.x + dp(2), i.y - dp(3))),
-                                           setattr(uc_shadow, 'size', (i.width - dp(4), i.height))))
+            uc_bg = RoundedRectangle(pos=user_card.pos, size=user_card.size, radius=[dp(14)])
+        user_card.bind(pos=lambda i, v: setattr(uc_bg, 'pos', v),
+                        size=lambda i, v: setattr(uc_bg, 'size', v))
 
         app_name = Label(text=APP_CONFIG["app_name"], color=IOS_DARK, font_size=sp(20), bold=True,
                          halign="left", valign="center")
@@ -1010,23 +998,13 @@ class TempMailApp(App):
         # 统计卡片
         email_count = len(self.emails)
         total_msgs = sum(e.get("unread", 0) for e in self.emails)
-        stats_card = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(88),
-                               padding=[dp(16), dp(14), dp(16), dp(14)])
+        stats_card = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(80),
+                               padding=[dp(16), dp(12), dp(16), dp(12)])
         with stats_card.canvas.before:
-            Color(0, 0, 0, 0.05)
-            sc_shadow = RoundedRectangle(
-                pos=(stats_card.x + dp(2), stats_card.y - dp(2)),
-                size=(stats_card.width - dp(4), stats_card.height),
-                radius=[dp(16)]
-            )
             Color(*WHITE)
-            sc_bg = RoundedRectangle(pos=stats_card.pos, size=stats_card.size, radius=[dp(16)])
-        stats_card.bind(pos=lambda i, v: (setattr(sc_bg, 'pos', v), setattr(sc_bg, 'size', v),
-                                           setattr(sc_shadow, 'pos', (i.x + dp(2), i.y - dp(2))),
-                                           setattr(sc_shadow, 'size', (i.width - dp(4), i.height))),
-                        size=lambda i, v: (setattr(sc_bg, 'pos', i.pos), setattr(sc_bg, 'size', v),
-                                           setattr(sc_shadow, 'pos', (i.x + dp(2), i.y - dp(2))),
-                                           setattr(sc_shadow, 'size', (i.width - dp(4), i.height))))
+            sc_bg = RoundedRectangle(pos=stats_card.pos, size=stats_card.size, radius=[dp(14)])
+        stats_card.bind(pos=lambda i, v: setattr(sc_bg, 'pos', v),
+                         size=lambda i, v: setattr(sc_bg, 'size', v))
 
         stat1 = BoxLayout(orientation="vertical")
         stat1.add_widget(Label(text=str(email_count), color=IOS_BLUE, font_size=sp(24), bold=True))
@@ -1164,9 +1142,9 @@ class TempMailApp(App):
             Color(*WHITE)
             self._bottom_bg = RoundedRectangle(pos=bottom.pos, size=bottom.size)
         bottom.bind(pos=self._update_bottom_bg, size=self._update_bottom_bg)
-        add_btn = RoundedButton(text="+  创建新邮箱", font_size=sp(17), bold=True)
-        add_btn.bind(on_release=self._create_email)
-        bottom.add_widget(add_btn)
+        self.create_btn = RoundedButton(text="+  创建新邮箱", font_size=sp(17), bold=True)
+        self.create_btn.bind(on_release=self._create_email)
+        bottom.add_widget(self.create_btn)
 
         self.content_area.add_widget(nav)
         self.content_area.add_widget(self.scroll)
@@ -1212,6 +1190,11 @@ class TempMailApp(App):
 
     # ── 创建邮箱 ──
     def _create_email(self, instance):
+        if hasattr(self, 'create_btn') and self.create_btn.disabled:
+            return
+        if hasattr(self, 'create_btn'):
+            self.create_btn.disabled = True
+            self.create_btn.text = "创建中..."
         self._loading_popup = Popup(
             title="", content=Label(text="正在创建邮箱...", color=IOS_DARK, font_size=sp(16)),
             size_hint=(0.6, None), height=dp(120),
@@ -1224,6 +1207,7 @@ class TempMailApp(App):
     def _on_email_created(self, success, result):
         if hasattr(self, '_loading_popup'):
             self._loading_popup.dismiss()
+        self._start_create_cooldown()
         if not success:
             self._show_error("创建失败", f"无法创建邮箱：{result}")
             return
@@ -1242,6 +1226,24 @@ class TempMailApp(App):
         self.emails.insert(0, email_data)
         self._save_emails()
         self._refresh_list()
+
+    def _start_create_cooldown(self):
+        if not hasattr(self, 'create_btn'):
+            return
+        self._cooldown_remaining = 5
+        self.create_btn.disabled = True
+        self.create_btn.text = f"请等待 {self._cooldown_remaining} 秒"
+
+        def tick(dt):
+            self._cooldown_remaining -= 1
+            if self._cooldown_remaining <= 0:
+                self.create_btn.disabled = False
+                self.create_btn.text = "+  创建新邮箱"
+                return False
+            self.create_btn.text = f"请等待 {self._cooldown_remaining} 秒"
+            return True
+
+        Clock.schedule_interval(tick, 1)
 
     # ── 删除邮箱 ──
     def _delete_email(self, email_id):
