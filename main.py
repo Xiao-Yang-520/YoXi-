@@ -6,6 +6,7 @@ import sys
 import importlib.util
 import tempfile
 import time
+import shutil
 
 # ── 读取配置 ──
 def load_config():
@@ -36,20 +37,38 @@ def download_remote_code():
             code = resp.read().decode("utf-8")
             if len(code) < 100:
                 return None, "远程代码内容过短"
+            # 验证是否是有效的 Python 代码（必须包含 flet 导入和 main 函数）
+            if "import flet" not in code and "from flet" not in code:
+                return None, "远程代码不是有效的 Flet 应用"
+            if "def main" not in code:
+                return None, "远程代码缺少 main 函数"
             # 保存到本地缓存
             cache_dir = os.path.join(tempfile.gettempdir(), "yoxi_cache")
             os.makedirs(cache_dir, exist_ok=True)
             cache_path = os.path.join(cache_dir, "app_code.py")
             with open(cache_path, "w", encoding="utf-8") as f:
                 f.write(code)
+            # 把 config.json 也复制到缓存目录，让远程代码能找到配置
+            builtin_dir = os.path.dirname(os.path.abspath(__file__))
+            config_src = os.path.join(builtin_dir, "config.json")
+            config_dst = os.path.join(cache_dir, "config.json")
+            if os.path.exists(config_src):
+                shutil.copy2(config_src, config_dst)
             return cache_path, "远程代码加载成功"
     except Exception as e:
         return None, f"下载失败：{str(e)[:50]}"
 
 # ── 加载本地缓存代码 ──
 def load_cached_code():
-    cache_path = os.path.join(tempfile.gettempdir(), "yoxi_cache", "app_code.py")
+    cache_dir = os.path.join(tempfile.gettempdir(), "yoxi_cache")
+    cache_path = os.path.join(cache_dir, "app_code.py")
     if os.path.exists(cache_path):
+        # 确保 config.json 也在缓存目录
+        builtin_dir = os.path.dirname(os.path.abspath(__file__))
+        config_src = os.path.join(builtin_dir, "config.json")
+        config_dst = os.path.join(cache_dir, "config.json")
+        if os.path.exists(config_src):
+            shutil.copy2(config_src, config_dst)
         return cache_path
     return None
 
