@@ -1,4 +1,4 @@
-name: Build iOS
+name: Build Android
 
 on:
   push:
@@ -6,8 +6,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-ios:
-    runs-on: macos-latest
+  build-android:
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -22,16 +22,24 @@ jobs:
           pip install --upgrade pip
           pip install flet==0.22.0
 
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.24.0'
           channel: 'stable'
 
-      - name: Install CocoaPods
+      - name: Setup Android SDK
         run: |
-          gem install cocoapods
-          pod setup
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          flutter doctor --android-licenses || true
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" || true
 
       - name: Clean up extra directories before build
         run: |
@@ -42,62 +50,39 @@ jobs:
           echo "=== Files after cleanup ==="
           ls -la
 
-      - name: Build iOS IPA
+      - name: Build Android APK
         run: |
-          echo "=== Building iOS IPA ==="
-          flet build --verbose ipa 2>&1 | tee build_log.txt
+          echo "=== Building Android APK ==="
+          flet build --verbose apk 2>&1 | tee build_log.txt
           BUILD_EXIT=${PIPESTATUS[0]}
           echo "=== Build exit code: $BUILD_EXIT ==="
           exit $BUILD_EXIT
         env:
           FLUTTER_SUPPRESS_ANALYTICS: "true"
 
-      - name: Generate unsigned IPA from xcarchive
-        if: always()
-        run: |
-          echo "=== Looking for xcarchive ==="
-          find . -name "*.xcarchive" -type d 2>/dev/null
-          XCARCHIVE=$(find . -name "*.xcarchive" -type d 2>/dev/null | head -1)
-          if [ -n "$XCARCHIVE" ]; then
-            echo "Found xcarchive: $XCARCHIVE"
-            APP_PATH="$XCARCHIVE/Products/Applications"
-            echo "=== Apps in archive ==="
-            ls -la "$APP_PATH" 2>/dev/null
-            mkdir -p Payload
-            cp -R "$APP_PATH"/*.app Payload/
-            zip -r YoXi-Email-unsigned.ipa Payload/
-            echo "=== Generated IPA ==="
-            ls -la YoXi-Email-unsigned.ipa
-          else
-            echo "No xcarchive found"
-          fi
-
       - name: Check build output
         if: always()
         run: |
           echo "=== build dir ==="
           ls -laR build 2>/dev/null | head -100 || echo "No build dir"
-          echo "=== Find IPA ==="
-          find . -name "*.ipa" 2>/dev/null
-          echo "=== Find xcarchive ==="
-          find . -name "*.xcarchive" -type d 2>/dev/null
-          echo "=== Build log last 100 lines ==="
-          tail -100 build_log.txt 2>/dev/null || echo "No log"
+          echo "=== Find APK ==="
+          find . -name "*.apk" 2>/dev/null
+          echo "=== Build log last 150 lines ==="
+          tail -150 build_log.txt 2>/dev/null || echo "No log"
 
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ios-build-log
+          name: android-build-log
           path: build_log.txt
           if-no-files-found: ignore
 
-      - name: Upload IPA
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: YoXi-Email-iOS
+          name: YoXi-Email-Android
           path: |
-            **/*.ipa
-            **/*.xcarchive
+            **/*.apk
           if-no-files-found: warn
           retention-days: 30
