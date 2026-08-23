@@ -8,14 +8,45 @@ import ssl
 import os
 import random
 
-ssl._create_default_https_context = ssl._create_unverified_context
+try:
+    ssl._create_default_https_context = ssl._create_unverified_context
+except:
+    pass
 
-CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
-with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-    APP_CONFIG = json.load(f)
+DEFAULT_CONFIG = {
+    "app_name": "YoXi邮箱",
+    "app_version": "1.0.0",
+    "theme_color": "#007AFF",
+    "window_width": 375,
+    "window_height": 812,
+    "supabase_url": "https://ojgydrkxdhfmlqgvumnm.supabase.co",
+    "supabase_anon_key": "sb_publishable_8MYiMk5lCid2owRD9OzSXQ_2Y4nfv3a",
+    "emailjs_service_id": "service_olj8cs4",
+    "emailjs_template_id": "template_f2l2zsl",
+    "emailjs_public_key": "t5u_Xr0_qw1IHjuSq",
+    "remote_config_url": "https://gitee.com/yao-xis-520/yo-xi-email-address/raw/master/remote_config.json",
+    "update_url": "https://wwawd.lanzouw.com/b01euptxsh",
+}
+
+try:
+    _base_dir = os.path.dirname(os.path.abspath(__file__))
+except:
+    _base_dir = os.getcwd()
+
+CONFIG_PATH = os.path.join(_base_dir, "config.json")
+try:
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        APP_CONFIG = json.load(f)
+except:
+    APP_CONFIG = DEFAULT_CONFIG.copy()
+
+# 确保所有必要的键都存在
+for k, v in DEFAULT_CONFIG.items():
+    if k not in APP_CONFIG:
+        APP_CONFIG[k] = v
 
 THEME_COLOR = APP_CONFIG.get("theme_color", "#007AFF")
-DATA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data.json")
+DATA_PATH = os.path.join(_base_dir, "data.json")
 
 
 def load_data():
@@ -365,8 +396,11 @@ class TempMailApp:
 
     def main(self):
         self.page.title = APP_CONFIG["app_name"]
-        self.page.window_width = APP_CONFIG.get("window_width", 375)
-        self.page.window_height = APP_CONFIG.get("window_height", 812)
+        try:
+            self.page.window_width = APP_CONFIG.get("window_width", 375)
+            self.page.window_height = APP_CONFIG.get("window_height", 812)
+        except:
+            pass
         self.page.theme_mode = ft.ThemeMode.LIGHT
         self.show_loading()
 
