@@ -484,10 +484,13 @@ class TempMailApp:
             else:
                 self.show_fullscreen_login()
 
-            # 显示公告（如果有）
+            # 显示公告（如果有），延迟一点确保页面加载完成
             announcement = remote_config.get("announcement", "")
             if announcement:
-                self._show_announcement(announcement)
+                def show_announcement_delayed():
+                    time.sleep(0.5)
+                    self.page.run_thread(lambda: self._show_announcement(announcement))
+                threading.Thread(target=show_announcement_delayed, daemon=True).start()
         except Exception as e:
             # 如果出错，至少显示登录页，避免黑屏
             try:
@@ -510,7 +513,7 @@ class TempMailApp:
                         pass
                 self._close_dialog()
             
-            self.page.dialog = ft.AlertDialog(
+            dialog = ft.AlertDialog(
                 title=ft.Row([
                     ft.Icon(ft.icons.CAMPAIGN, size=24, color=THEME_COLOR),
                     ft.Container(width=8),
@@ -528,7 +531,8 @@ class TempMailApp:
                 ],
                 actions_alignment=ft.MainAxisAlignment.END,
             )
-            self.page.dialog.open = True
+            dialog.open = True
+            self.page.dialog = dialog
             self.page.update()
         except:
             pass
