@@ -49,8 +49,10 @@ jobs:
       - name: Build Android APK
         run: |
           echo "=== Building Android APK ==="
-          flet build --verbose apk --icon app_icon.png --product "YoXi邮箱" 2>&1 | tee build_log.txt
-          echo "=== Build exit code: ${PIPESTATUS[0]} ==="
+          flet build --verbose apk 2>&1 | tee build_log.txt
+          BUILD_EXIT=${PIPESTATUS[0]}
+          echo "=== Build exit code: $BUILD_EXIT ==="
+          exit $BUILD_EXIT
         env:
           FLUTTER_SUPPRESS_ANALYTICS: "true"
 
@@ -120,8 +122,10 @@ jobs:
       - name: Build iOS IPA
         run: |
           echo "=== Building iOS IPA ==="
-          flet build --verbose ipa --icon app_icon.png --product "YoXi邮箱" 2>&1 | tee build_log.txt
-          echo "=== Build exit code: ${PIPESTATUS[0]} ==="
+          flet build --verbose ipa 2>&1 | tee build_log.txt
+          BUILD_EXIT=${PIPESTATUS[0]}
+          echo "=== Build exit code: $BUILD_EXIT ==="
+          exit $BUILD_EXIT
         env:
           FLUTTER_SUPPRESS_ANALYTICS: "true"
 
