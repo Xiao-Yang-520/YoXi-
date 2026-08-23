@@ -10,6 +10,9 @@
   "update_url": "https://wwawd.lanzouw.com/b01euptxsh",
   "supabase_url": "https://ojgydrkxdhfmlqgvumnm.supabase.co",
   "supabase_anon_key": "sb_publishable_8MYiMk5lCid2owRD9OzSXQ_2Y4nfv3a",
+  "emailjs_service_id": "service_olj8cs4",
+  "emailjs_template_id": "template_f2l2zsl",
+  "emailjs_public_key": "t5u_Xr0_qw1IHjuSq",
   "enable_phone_tab": true,
   "phone_numbers": [
     {"country": "美国", "number": "+1 787-395-8339"},

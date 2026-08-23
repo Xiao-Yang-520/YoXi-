@@ -1,899 +1,583 @@
 import flet as ft
-import urllib.request
 import json
-import os
 import time
 import threading
+import urllib.request
+import urllib.parse
 import ssl
+import os
+import random
 
-# iOS 上跳过 SSL 证书验证，避免 urllib  HTTPS 请求失败
-try:
-    ssl._create_default_https_context = ssl._create_unverified_context
-except:
-    pass
+ssl._create_default_https_context = ssl._create_unverified_context
 
-# ── 用标准库 urllib 实现 requests 兼容层（避免 iOS 上 C 扩展编译失败）──
-class _Response:
-    def __init__(self, status_code, text, headers=None):
-        self.status_code = status_code
-        self.text = text
-        self.headers = headers or {}
-    def json(self):
-        return json.loads(self.text)
-    def raise_for_status(self):
-        if self.status_code >= 400:
-            raise Exception(f"HTTP {self.status_code}")
-
-def _request(method, url, headers=None, json_data=None, timeout=10):
-    data = None
-    req_headers = dict(headers or {})
-    req_headers.setdefault('User-Agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)')
-    if json_data is not None:
-        data = json.dumps(json_data).encode('utf-8')
-        req_headers['Content-Type'] = 'application/json'
-    req = urllib.request.Request(url, data=data, headers=req_headers, method=method)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return _Response(resp.status, resp.read().decode('utf-8'), dict(resp.headers))
-
-class _Requests:
-    def get(self, url, headers=None, timeout=10):
-        return _request('GET', url, headers=headers, timeout=timeout)
-    def post(self, url, headers=None, json=None, timeout=10):
-        return _request('POST', url, headers=headers, json_data=json, timeout=timeout)
-    def patch(self, url, headers=None, json=None, timeout=10):
-        return _request('PATCH', url, headers=headers, json_data=json, timeout=timeout)
-
-requests = _Requests()
-
-# ─────────────────────── 配置加载 ───────────────────────
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
-DATA_PATH = os.path.join(BASE_DIR, "data.json")
-
+CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 with open(CONFIG_PATH, "r", encoding="utf-8") as f:
     APP_CONFIG = json.load(f)
 
-API_BASE = "https://api.mail.tm"
-EMAIL_LIFETIME = APP_CONFIG["email_lifetime_seconds"]
-THEME_COLOR = APP_CONFIG["theme_color"]
+THEME_COLOR = APP_CONFIG.get("theme_color", "#007AFF")
+DATA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data.json")
 
-# ─────────────────────── 数据存储 ───────────────────────
+
 def load_data():
-    if os.path.exists(DATA_PATH):
-        try:
-            with open(DATA_PATH, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                data.setdefault("emails", [])
-                data.setdefault("users", [])
-                data.setdefault("current_user", None)
-                return data
-        except:
-            pass
-    return {"emails": [], "users": [], "current_user": None}
+    try:
+        with open(DATA_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return {"emails": [], "current_user": None, "qq_email_map": {}}
+
 
 def save_data(data):
     with open(DATA_PATH, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-# ─────────────────────── mail.tm API ───────────────────────
-def api_get_domains():
-    r = requests.get(f"{API_BASE}/domains", timeout=10)
-    r.raise_for_status()
-    return r.json()["hydra:member"]
 
-def api_create_account(address, password):
-    r = requests.post(f"{API_BASE}/accounts", json={
-        "address": address, "password": password
-    }, timeout=10)
-    r.raise_for_status()
-    return r.json()
+def supabase_request(method, path, body=None, token=None):
+    url = APP_CONFIG["supabase_url"] + path
+    headers = {
+        "apikey": APP_CONFIG["supabase_anon_key"],
+        "Content-Type": "application/json",
+    }
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    data = json.dumps(body).encode("utf-8") if body else None
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return True, json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            return False, json.loads(e.read().decode("utf-8"))
+        except:
+            return False, str(e)
+    except Exception as e:
+        return False, str(e)
 
-def api_get_token(address, password):
-    r = requests.post(f"{API_BASE}/token", json={
-        "address": address, "password": password
-    }, timeout=10)
-    r.raise_for_status()
-    return r.json()["token"]
 
-def api_get_messages(token):
-    r = requests.get(f"{API_BASE}/messages", headers={
-        "Authorization": f"Bearer {token}"
-    }, timeout=10)
-    r.raise_for_status()
-    return r.json()["hydra:member"]
+def send_email_code(to_email, code):
+    """通过 EmailJS 发送数字验证码邮件"""
+    service_id = APP_CONFIG.get("emailjs_service_id", "")
+    template_id = APP_CONFIG.get("emailjs_template_id", "")
+    public_key = APP_CONFIG.get("emailjs_public_key", "")
+    if not service_id or not template_id or not public_key or "YOUR_" in service_id:
+        return False, "EmailJS 未配置"
+    url = "https://api.emailjs.com/api/v1.0/email/send"
+    body = json.dumps({
+        "service_id": service_id,
+        "template_id": template_id,
+        "user_id": public_key,
+        "template_params": {
+            "to_email": to_email,
+            "code": code,
+        }
+    }).encode("utf-8")
+    req = urllib.request.Request(url, data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Origin": "https://emailjs.com",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        }, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return True, "发送成功"
+    except urllib.error.HTTPError as e:
+        try:
+            body = e.read().decode("utf-8")
+            return False, f"HTTP {e.code}: {body}"
+        except:
+            return False, f"HTTP {e.code}: {str(e)}"
+    except Exception as e:
+        return False, f"错误: {str(e)}"
 
-def api_get_message(token, msg_id):
-    r = requests.get(f"{API_BASE}/messages/{msg_id}", headers={
-        "Authorization": f"Bearer {token}"
-    }, timeout=10)
-    r.raise_for_status()
-    return r.json()
 
-# ─────────────────────── 主应用 ───────────────────────
+# ========== mail.tm 临时邮箱 API ==========
+def mailtm_request(method, path, body=None, token=None):
+    url = "https://api.mail.tm" + path
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    data = json.dumps(body).encode("utf-8") if body else None
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return True, json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            return False, json.loads(e.read().decode("utf-8"))
+        except:
+            return False, str(e)
+    except Exception as e:
+        return False, str(e)
+
+
+def mailtm_get_domain():
+    """获取可用域名"""
+    ok, data = mailtm_request("GET", "/domains")
+    if ok and isinstance(data, list) and len(data) > 0:
+        return True, data[0]["domain"]
+    return False, data
+
+
+def mailtm_create():
+    """创建随机临时邮箱"""
+    import random, string
+    ok, domain = mailtm_get_domain()
+    if not ok:
+        return False, domain
+    login = "".join(random.choices(string.ascii_lowercase + string.digits, k=10))
+    password = "".join(random.choices(string.ascii_letters + string.digits, k=16))
+    address = login + "@" + domain
+    # 创建账号
+    ok, data = mailtm_request("POST", "/accounts", {"address": address, "password": password})
+    if not ok:
+        return False, data
+    # 获取 token
+    ok2, data2 = mailtm_request("POST", "/token", {"address": address, "password": password})
+    if not ok2:
+        return False, data2
+    return True, {
+        "address": address,
+        "login": login,
+        "domain": domain,
+        "password": password,
+        "token": data2.get("token", ""),
+        "account_id": data.get("id", ""),
+    }
+
+
+def mailtm_get_messages(token):
+    """获取收件箱邮件列表"""
+    return mailtm_request("GET", "/messages", token=token)
+
+
+def mailtm_read_message(token, msg_id):
+    """读取邮件详情"""
+    return mailtm_request("GET", "/messages/" + msg_id, token=token)
+
+
+# ========== Guerrilla Mail 临时邮箱 API ==========
+def guerrilla_get_address():
+    """获取临时邮箱地址"""
+    url = "https://api.guerrillamail.com/ajax.php?f=get_email_address&lang=en"
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": "https://www.guerrillamail.com/",
+        })
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            return True, data
+    except Exception as e:
+        return False, str(e)
+
+
+def guerrilla_get_messages(sid_token):
+    """获取邮件列表"""
+    url = "https://api.guerrillamail.com/ajax.php?f=get_email_list&offset=0&sid_token=" + sid_token + "&lang=en"
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": "https://www.guerrillamail.com/",
+        })
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            return True, data.get("list", [])
+    except Exception as e:
+        return False, str(e)
+
+
+def guerrilla_read_message(sid_token, msg_id):
+    """读取邮件详情"""
+    url = "https://api.guerrillamail.com/ajax.php?f=fetch_email&email_id=" + str(msg_id) + "&sid_token=" + sid_token + "&lang=en"
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": "https://www.guerrillamail.com/",
+        })
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return True, json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        return False, str(e)
+
+
+# ========== maildrop 临时邮箱 API ==========
+def maildrop_graphql(query):
+    """调用 maildrop GraphQL API"""
+    url = "https://api.maildrop.cc/graphql"
+    body = json.dumps({"query": query}).encode("utf-8")
+    try:
+        req = urllib.request.Request(url, data=body, headers={
+            "User-Agent": "Mozilla/5.0",
+            "Content-Type": "application/json",
+        })
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return True, json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        return False, str(e)
+
+
+def maildrop_get_messages(mailbox):
+    """获取邮件列表"""
+    query = '{ inbox(mailbox:"' + mailbox + '") { id subject date mailfrom } }'
+    ok, data = maildrop_graphql(query)
+    if ok:
+        return True, data.get("data", {}).get("inbox", [])
+    return False, data
+
+
+def maildrop_read_message(mailbox, msg_id):
+    """读取邮件详情"""
+    query = '{ email(mailbox:"' + mailbox + '", id:"' + str(msg_id) + '") { id subject date mailfrom data } }'
+    ok, data = maildrop_graphql(query)
+    if ok:
+        return True, data.get("data", {}).get("email", {})
+    return False, data
+
+
+# ========== temp-mail.io 临时邮箱 API ==========
+def temp_mail_io_create():
+    """创建临时邮箱"""
+    url = "https://api.internal.temp-mail.io/api/v3/email/new"
+    body = json.dumps({"min_name_length": 10, "max_name_length": 10}).encode("utf-8")
+    try:
+        req = urllib.request.Request(url, data=body, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        })
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            email = data.get("email", "")
+            login = email.split("@")[0] if "@" in email else ""
+            domain = email.split("@")[1] if "@" in email else ""
+            return True, {
+                "address": email,
+                "login": login,
+                "domain": domain,
+                "token": data.get("token", ""),
+            }
+    except Exception as e:
+        return False, str(e)
+
+
+def temp_mail_io_get_messages(email):
+    """获取邮件列表"""
+    url = "https://api.internal.temp-mail.io/api/v3/email/" + email + "/messages"
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/json",
+        })
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return True, json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        return False, str(e)
+
+
+def temp_mail_io_read_message(email, msg_id):
+    """读取邮件详情"""
+    url = "https://api.internal.temp-mail.io/api/v3/email/" + email + "/messages/" + str(msg_id)
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/json",
+        })
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return True, json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        return False, str(e)
+
+
+# ========== 免费短信接收爬虫 (free-sms-receive.com) ==========
+def sms_fetch_page(url, timeout=30):
+    """获取网页内容"""
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "text/html",
+    })
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read().decode("utf-8")
+
+
+def sms_parse_numbers(html_content):
+    """解析号码列表"""
+    numbers = []
+    # 直接提取号码、国家、链接
+    nums = re.findall(r'<h4 class="number-boxes-item-number">([^<]+)</h4>', html_content)
+    countries = re.findall(r'<h5 class="number-boxes-item-country">([^<]+)</h5>', html_content)
+    links = re.findall(r'href="(/message/\d+\.html)"', html_content)
+    
+    for i in range(min(len(nums), len(links))):
+        number = html.unescape(nums[i].strip())
+        country = html.unescape(countries[i].strip()) if i < len(countries) else ""
+        # 去除国家中的换行和多余空格
+        country = " ".join(country.split())
+        link = "https://www.free-sms-receive.com" + links[i]
+        
+        if number and link:
+            numbers.append({
+                "number": number,
+                "country": country,
+                "url": link,
+            })
+    
+    return numbers
+
+
+def sms_parse_messages(html_content):
+    """解析短信列表"""
+    messages = []
+    # 直接提取发件人、时间、内容
+    senders = re.findall(r'<div class="mobile_hide">([^<]+)</div>', html_content)
+    times = re.findall(r'<div class="col-xs-0 col-md-2">([^<]+)</div>', html_content)
+    contents = re.findall(r'<div class="col-xs-12 col-md-8"[^>]*>(.*?)</div>', html_content, re.DOTALL)
+    
+    for i in range(len(senders)):
+        sender = html.unescape(senders[i].strip())
+        time = html.unescape(times[i].strip()) if i < len(times) else ""
+        msg_content = ""
+        if i < len(contents):
+            msg_content = html.unescape(contents[i].strip())
+            msg_content = re.sub(r'<[^>]+>', '', msg_content)
+        
+        if sender or msg_content:
+            messages.append({
+                "sender": sender,
+                "time": time,
+                "content": msg_content,
+            })
+    
+    return messages
+
+
 class TempMailApp:
-    def __init__(self, page: ft.Page):
+    def __init__(self, page):
         self.page = page
         self.data = load_data()
         self.current_user = self.data.get("current_user", None)
+        self.qq_email_map = self.data.get("qq_email_map", {})
         self.current_tab = 0
-        self.current_email = None
-        self.current_messages = []
-        self.view = "list"  # list / inbox / detail
-        self.current_msg = None
-        self.create_cooldown = False
-        self.refresh_timer = None
-        self.countdown_timer = None
-        self.remote_config_timer = None
-        self.is_disabled = False
-        self._pending_update = None
         self._pending_announcement = None
-        self.remote_config = {
-            "enabled": "是",
-            "maintenance": "否",
-            "force_update": "否",
-            "latest_version": APP_CONFIG["app_version"],
-            "announcement": "",
-        }
+        self._pending_update = None
 
-        page.title = APP_CONFIG["app_name"]
-        page.theme_mode = ft.ThemeMode.LIGHT
-        page.theme = ft.Theme(color_scheme_seed=THEME_COLOR)
-        page.window_width = APP_CONFIG["window_width"]
-        page.window_height = APP_CONFIG["window_height"]
-        page.padding = 0
-        page.spacing = 0
+    def main(self):
+        self.page.title = APP_CONFIG["app_name"]
+        self.page.window_width = APP_CONFIG.get("window_width", 375)
+        self.page.window_height = APP_CONFIG.get("window_height", 812)
+        self.page.theme_mode = ft.ThemeMode.LIGHT
+        self.show_loading()
 
-        # 先显示加载界面
-        self.show_splash()
-        self.start_loading()
-
-    # ────────── 启动加载界面 ──────────
-    def show_splash(self):
+    # ========== 加载页 ==========
+    def show_loading(self):
         self.page.controls.clear()
-        self.splash_progress = ft.ProgressBar(value=0, width=280, color=THEME_COLOR)
-        self.splash_text = ft.Text("正在初始化...", size=13, color=ft.colors.GREY_500)
-        self.splash_percent = ft.Text("0%", size=15, weight=ft.FontWeight.BOLD, color=THEME_COLOR)
-
-        splash = ft.Column([
-            ft.Container(height=100),
-            ft.Text(APP_CONFIG["app_name"], size=34, weight=ft.FontWeight.BOLD),
-            ft.Text("临时邮箱 · 隐私保护", size=14, color=ft.colors.GREY_400),
+        self.progress = ft.ProgressBar(width=280, value=0, color=THEME_COLOR)
+        self.status_text = ft.Text("正在加载...", size=14, color=ft.colors.GREY_500)
+        loading_page = ft.Column([
             ft.Container(expand=True),
-            self.splash_progress,
-            ft.Container(height=8),
             ft.Row([
-                self.splash_text,
-                self.splash_percent,
-            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, width=280),
-            ft.Container(height=50),
-        ], expand=True, spacing=8, horizontal_alignment=ft.CrossAxisAlignment.CENTER)
-
-        self.page.add(splash)
-        self.page.update()
-
-    def start_loading(self):
-        def load():
-            try:
-                self.update_splash(15, "初始化本地数据...")
-                self.data = load_data()
-                time.sleep(0.4)
-
-                self.update_splash(50, "获取远程配置...")
-                self.fetch_remote_config()
-                time.sleep(0.3)
-
-                enabled = self.remote_config.get("enabled", "是")
-                maintenance = self.remote_config.get("maintenance", "否")
-                force_update = self.remote_config.get("force_update", "否")
-                latest_version = self.remote_config.get("latest_version", APP_CONFIG["app_version"])
-                announcement = self.remote_config.get("announcement", "")
-
-                # 1. 停用/维护检查
-                if enabled == "否" or maintenance == "是":
-                    status_text = "应用维护中" if maintenance == "是" else "应用已停用"
-                    self.update_splash(100, status_text)
-                    time.sleep(0.3)
-                    self.is_disabled = True
-                    self.page.run_thread(lambda: self.show_disabled_page_in_splash(maintenance == "是"))
-                    return
-
-                # 2. 强制更新检查
-                if force_update == "是" and latest_version != APP_CONFIG["app_version"]:
-                    self.update_splash(100, "发现新版本")
-                    time.sleep(0.3)
-                    self.page.run_thread(lambda: self.show_force_update_prompt(latest_version))
-                    return
-
-                # 3. 版本更新提示（非强制）
-                if latest_version != APP_CONFIG["app_version"]:
-                    self._pending_update = latest_version
-                else:
-                    self._pending_update = None
-
-                # 4. 公告
-                self._pending_announcement = announcement if announcement else None
-
-                self.update_splash(75, "检查更新与公告...")
-                time.sleep(0.3)
-
-                self.update_splash(90, "准备就绪...")
-                time.sleep(0.2)
-
-                self.update_splash(100, "加载完成")
-                time.sleep(0.3)
-
-                self.page.run_thread(self.finish_loading)
-            except:
-                self.page.run_thread(self.finish_loading)
-
-        threading.Thread(target=load, daemon=True).start()
-
-    def show_disabled_page_in_splash(self, is_maintenance=False):
-        """在加载界面直接显示停用页面，不构建主界面"""
-        self.page.controls.clear()
-        title = "应用维护中" if is_maintenance else "应用已停用"
-        desc = "应用正在维护，请稍后再试" if is_maintenance else "该应用已被管理员停用"
-        emoji = "⚠️" if is_maintenance else "🚫"
-        color = ft.colors.ORANGE if is_maintenance else ft.colors.RED
-
-        disabled_page = ft.Column([
+                ft.Container(
+                    content=ft.Icon(ft.icons.MAIL, size=64, color=THEME_COLOR),
+                    width=120, height=120, bgcolor=ft.colors.BLUE_50,
+                    border_radius=60, alignment=ft.alignment.center,
+                ),
+            ], alignment=ft.MainAxisAlignment.CENTER),
+            ft.Container(height=30),
+            ft.Row([ft.Text(APP_CONFIG["app_name"], size=24, weight=ft.FontWeight.BOLD)], alignment=ft.MainAxisAlignment.CENTER),
+            ft.Container(height=30),
+            ft.Row([self.progress], alignment=ft.MainAxisAlignment.CENTER),
+            ft.Container(height=15),
+            ft.Row([self.status_text], alignment=ft.MainAxisAlignment.CENTER),
             ft.Container(expand=True),
-            ft.Text(emoji, size=80),
-            ft.Container(height=20),
-            ft.Text(title, size=24, weight=ft.FontWeight.BOLD, color=color),
-            ft.Container(height=10),
-            ft.Text(desc, size=14, color=ft.colors.GREY_500),
-            ft.Container(height=8),
-            ft.Text("当前状态会自动更新，请保持网络连接", size=12, color=ft.colors.GREY_400),
-            ft.Container(expand=True),
-        ], expand=True, spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER)
-
-        self.page.add(disabled_page)
+        ], expand=True, spacing=0)
+        self.page.add(loading_page)
         self.page.update()
+        threading.Thread(target=self.load_thread, daemon=True).start()
 
-        # 启动后台线程持续检查远程配置，恢复后自动进入主界面
-        def watch():
-            while True:
-                time.sleep(10)
-                try:
-                    self.fetch_remote_config()
-                    enabled = self.remote_config.get("enabled", "是")
-                    maintenance = self.remote_config.get("maintenance", "否")
-                    if enabled == "是" and maintenance == "否":
-                        self.is_disabled = False
-                        self.page.run_thread(self.finish_loading)
-                        return
-                except:
-                    pass
-        threading.Thread(target=watch, daemon=True).start()
-
-    def update_splash(self, percent, text):
+    def update_splash(self, value, text):
         try:
-            self.splash_progress.value = percent / 100
-            self.splash_percent.value = f"{percent}%"
-            self.splash_text.value = text
+            self.progress.value = value / 100
+            self.status_text.value = text
             self.page.update()
         except:
             pass
 
-    def finish_loading(self):
-        self.build_ui()
-        self.start_countdown()
-        self.start_remote_config_check()
-        # 显示待处理的公告和更新提示
-        if self._pending_announcement:
-            self.show_announcement(self._pending_announcement)
-        elif self._pending_update:
-            self.show_update_prompt(self._pending_update)
+    def load_thread(self):
+        try:
+            self.update_splash(20, "检查网络..."); time.sleep(0.3)
+            self.update_splash(50, "加载配置..."); time.sleep(0.3)
+            # 加载远程配置
+            self._remote_config = self._fetch_remote_config()
+            self.update_splash(80, "准备就绪..."); time.sleep(0.3)
+            self.update_splash(100, "加载完成"); time.sleep(0.3)
+            self.page.run_thread(self.after_loading)
+        except:
+            self._remote_config = {}
+            self.page.run_thread(self.after_loading)
 
-    def build_ui(self):
+    def _fetch_remote_config(self):
+        """加载远程配置"""
+        url = APP_CONFIG.get("remote_config_url", "")
+        if not url:
+            return {}
+        try:
+            req = urllib.request.Request(url, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept": "application/json",
+            })
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except:
+            return {}
+
+    def after_loading(self):
+        # 先检查版本更新，版本号不一样就强制更新
+        remote_config = getattr(self, '_remote_config', {})
+        latest_version = remote_config.get("latest_version", "")
+        current_version = APP_CONFIG.get("app_version", "1.0.0")
+        
+        if latest_version and latest_version != current_version:
+            self._show_force_update(remote_config)
+            return
+        
+        # 进入主界面
+        if self.current_user:
+            self.build_main_ui()
+            self.render_email_list()
+        else:
+            self.show_fullscreen_login()
+        
+        # 显示公告（如果有）
+        announcement = remote_config.get("announcement", "")
+        if announcement:
+            self._show_announcement(announcement)
+
+    def _show_announcement(self, text):
+        """显示公告弹窗"""
+        try:
+            # QQ群链接（等用户提供后替换）
+            qq_group_url = "https://qun.qq.com/universal-share/share?ac=1&authKey=%2BV5%2BNIvhemn1ucdgZCuJ9yKQv0AaU%2FVBzknLlvlpROd62RHd2fwTniQ9M5r98u44&busi_data=eyJncm91cENvZGUiOiIxMDkzOTI3NjQzIiwidG9rZW4iOiJVY2x2a2x6YTAwdDBFTmJHL1JjbXBzN1JnODJyS3ZPc3NSbzNxMi9YUEtOZ1BhaXR2OTZualVUT1RkRjJIQm82IiwidWluIjoiMzI5NzA0Nzk2MSJ9&data=6ldRotVZ1SRNLWwi8JzUgl5NzFWAL2XkHohHMi60HsbbSSBXbFcwV9AMceiYFAvUd2_zu6p4bo2F0UA6AxWggg&svctype=4&tempid=h5_group_info"
+            
+            def join_qq_group(e):
+                if qq_group_url and qq_group_url != "https://qm.qq.com/qq-group-placeholder":
+                    try:
+                        import webbrowser
+                        webbrowser.open(qq_group_url)
+                    except:
+                        pass
+                self._close_dialog()
+            
+            self.page.dialog = ft.AlertDialog(
+                title=ft.Row([
+                    ft.Icon(ft.icons.CAMPAIGN, size=24, color=THEME_COLOR),
+                    ft.Container(width=8),
+                    ft.Text("公告", size=20, weight=ft.FontWeight.BOLD),
+                ]),
+                content=ft.Container(
+                    content=ft.Text(text, size=14, color=ft.colors.GREY_700),
+                    width=280,
+                    padding=ft.padding.all(10),
+                ),
+                actions=[
+                    ft.TextButton("加入QQ群", on_click=join_qq_group,
+                        style=ft.ButtonStyle(color=THEME_COLOR)),
+                    ft.TextButton("我知道了", on_click=lambda e: self._close_dialog()),
+                ],
+                actions_alignment=ft.MainAxisAlignment.END,
+            )
+            self.page.dialog.open = True
+            self.page.update()
+        except:
+            pass
+
+    def _show_force_update(self, remote_config):
+        """显示强制更新弹窗"""
+        update_url = remote_config.get("update_url", APP_CONFIG.get("update_url", ""))
+        latest_version = remote_config.get("latest_version", "")
+        update_desc = remote_config.get("update_description", "发现新版本，请更新后使用")
+        
+        def do_update(e):
+            if update_url:
+                try:
+                    import webbrowser
+                    webbrowser.open(update_url)
+                except:
+                    pass
+        
         self.page.controls.clear()
-        self.content = ft.Column(expand=True, scroll=ft.ScrollMode.AUTO, spacing=0)
-        self.fab = ft.Container(
-            content=ft.FloatingActionButton(
-                icon=ft.icons.ADD,
-                on_click=self.create_email,
-                bgcolor=THEME_COLOR,
+        self.page.navigation_bar = None
+        update_page = ft.Column([
+            ft.Container(expand=True),
+            ft.Row([
+                ft.Container(
+                    content=ft.Icon(ft.icons.SYSTEM_UPDATE, size=64, color=THEME_COLOR),
+                    width=120, height=120, bgcolor=ft.colors.BLUE_50,
+                    border_radius=60, alignment=ft.alignment.center,
+                ),
+            ], alignment=ft.MainAxisAlignment.CENTER),
+            ft.Container(height=30),
+            ft.Row([ft.Text("发现新版本", size=24, weight=ft.FontWeight.BOLD)], alignment=ft.MainAxisAlignment.CENTER),
+            ft.Container(height=10),
+            ft.Row([ft.Text(f"最新版本：v{latest_version}", size=14, color=ft.colors.GREY_500)], alignment=ft.MainAxisAlignment.CENTER),
+            ft.Container(height=20),
+            ft.Container(
+                content=ft.Text(update_desc, size=14, color=ft.colors.GREY_700, text_align=ft.TextAlign.CENTER),
+                padding=ft.padding.symmetric(0, 30),
             ),
-            bottom=20,
-            right=20,
-            visible=False,
-        )
-        self.content_stack = ft.Stack([self.content, self.fab], expand=True)
-        self.page.add(self.content_stack)
-        self.page.navigation_bar = ft.NavigationBar(
-            destinations=[
-                ft.NavigationDestination(icon=ft.icons.MAIL_OUTLINE, selected_icon=ft.icons.MAIL, label="邮箱"),
-                ft.NavigationDestination(icon=ft.icons.PHONE_OUTLINED, selected_icon=ft.icons.PHONE, label="号码"),
-                ft.NavigationDestination(icon=ft.icons.PERSON_OUTLINE, selected_icon=ft.icons.PERSON, label="我的"),
-            ],
-            on_change=self.on_tab_change,
-            selected_index=0,
-        )
-        self.render_email_list()
-
-    def on_tab_change(self, e):
-        # 如果应用被停用，任何切换都显示停用页面
-        if self.is_disabled:
-            self.show_disabled_page(self.remote_config.get("maintenance", "否") == "是")
-            return
-        self.current_tab = e.control.selected_index
-        self.view = "list"
-        self.current_email = None
-        self.stop_refresh()
-        if self.current_tab == 0:
-            self.render_email_list()
-        elif self.current_tab == 1:
-            self.render_phone_page()
-        elif self.current_tab == 2:
-            self.render_me_page()
-
-    # ────────── 邮箱列表页 ──────────
-    def render_email_list(self):
-        if self.is_disabled:
-            self.show_disabled_page(self.remote_config.get("maintenance", "否") == "是")
-            return
-        emails = self.data.get("emails", [])
-        self.content.scroll = ft.ScrollMode.AUTO if emails else None
-        self.fab.visible = True
-        self.content.controls.clear()
-        self.content.controls.append(ft.Container(
-            content=ft.Text("临时邮箱", size=28, weight=ft.FontWeight.BOLD),
-            padding=ft.padding.only(20, 40, 20, 10),
-        ))
-        self.content.controls.append(ft.Container(
-            content=ft.Text("创建1小时有效期临时邮箱，自动接收邮件", size=13, color=ft.colors.GREY_500),
-            padding=ft.padding.only(20, 0, 20, 10),
-        ))
-
-        emails = self.data.get("emails", [])
-        if not emails:
-            self.content.controls.append(ft.Container(
-                content=ft.Column([
-                    ft.Text("📫", size=80),
-                    ft.Text("暂无邮箱", size=20, weight=ft.FontWeight.W_500, color=ft.colors.GREY_600),
-                    ft.Text("点击右下角按钮创建临时邮箱", size=13, color=ft.colors.GREY_400),
-                ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=16),
-                expand=True,
+            ft.Container(height=30),
+            ft.Container(
+                content=ft.ElevatedButton(
+                    "立即更新", width=200, height=50,
+                    style=ft.ButtonStyle(bgcolor=THEME_COLOR, color=ft.colors.WHITE),
+                    on_click=do_update,
+                ),
                 alignment=ft.alignment.center,
-            ))
-        else:
-            for email in emails:
-                self.content.controls.append(self.build_email_card(email))
-
-        self.fab.visible = True
+            ),
+            ft.Container(expand=True),
+        ], expand=True, spacing=0)
+        self.page.add(update_page)
         self.page.update()
 
-    def build_email_card(self, email):
-        remaining = email["expires_at"] - time.time()
-        expired = remaining <= 0
-        mins = int(remaining // 60)
-        secs = int(remaining % 60)
-        time_text = f"剩余: {mins}分{secs:02d}秒" if not expired else "已过期"
-        time_color = ft.colors.RED if expired else ft.colors.GREY_500
-
-        unread = email.get("unread", 0)
-        unread_badge = ft.Container(
-            content=ft.Text(str(unread), size=11, color=ft.colors.WHITE),
-            bgcolor=ft.colors.RED,
-            border_radius=10,
-            padding=ft.padding.only(6, 2, 6, 2),
-            visible=unread > 0,
-        )
-
-        card = ft.Container(
-            content=ft.Column([
-                ft.Row([
-                    ft.Text(email["address"], size=15, weight=ft.FontWeight.W_500, expand=True),
-                    ft.IconButton(
-                        icon=ft.icons.COPY,
-                        icon_color=ft.colors.GREY_400,
-                        icon_size=18,
-                        on_click=lambda e, addr=email["address"]: self.copy_text(addr),
-                    ),
-                    unread_badge,
-                    ft.IconButton(
-                        icon=ft.icons.DELETE_OUTLINE,
-                        icon_color=ft.colors.RED_300,
-                        icon_size=20,
-                        on_click=lambda e, eid=email["id"]: self.delete_email(eid),
-                    ),
-                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                ft.Row([
-                    ft.Text(time_text, size=12, color=time_color),
-                    ft.Text("查看", size=13, color=THEME_COLOR),
-                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-            ], spacing=4),
-            bgcolor=ft.colors.WHITE,
-            border_radius=14,
-            padding=16,
-            margin=ft.margin.only(16, 6, 16, 6),
-            on_click=lambda e, eid=email["id"]: self.open_inbox(eid),
-        )
-        return card
-
-    def create_email(self, e):
-        if self.create_cooldown:
-            return
-        self.create_cooldown = True
-        self.fab.content.disabled = True
-        # 显示加载提示
-        loading_dlg = ft.AlertDialog(
-            content=ft.Row([
-                ft.ProgressRing(width=20, height=20, stroke_width=2),
-                ft.Text("正在创建邮箱..."),
-            ], spacing=10, alignment=ft.MainAxisAlignment.CENTER),
-        )
-        self.page.dialog = loading_dlg
-        loading_dlg.open = True
+    # ========== 全屏登录页 ==========
+    def show_fullscreen_login(self):
+        self.page.controls.clear()
+        self.page.navigation_bar = None
+        self.content = ft.Column(expand=True, scroll=ft.ScrollMode.AUTO, spacing=0)
+        self.page.add(self.content)
         self.page.update()
+        self.show_login_page()
 
-        def task():
-            try:
-                domains = api_get_domains()
-                domain = domains[0]["domain"]
-                import random, string
-                username = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
-                password = ''.join(random.choices(string.ascii_letters + string.digits, k=16))
-                address = f"{username}@{domain}"
-                api_create_account(address, password)
-                token = api_get_token(address, password)
-                email_data = {
-                    "id": str(int(time.time() * 1000)),
-                    "address": address,
-                    "domain": domain,
-                    "password": password,
-                    "token": token,
-                    "created_at": time.time(),
-                    "expires_at": time.time() + EMAIL_LIFETIME,
-                    "expired": False,
-                    "unread": 0,
-                }
-                self.data["emails"].insert(0, email_data)
-                save_data(self.data)
-                loading_dlg.open = False
-                self.page.update()
-                self.render_email_list()
-            except Exception as ex:
-                loading_dlg.open = False
-                self.page.update()
-                self.show_error("创建失败", str(ex))
-            finally:
-                def cooldown():
-                    for i in range(5, 0, -1):
-                        time.sleep(1)
-                    self.fab.content.disabled = False
-                    self.create_cooldown = False
-                    self.page.update()
-                threading.Thread(target=cooldown, daemon=True).start()
-
-        threading.Thread(target=task, daemon=True).start()
-
-    def delete_email(self, email_id):
-        def close_dlg(e):
-            dlg.open = False
-            self.page.update()
-        def confirm(e):
-            self.data["emails"] = [e for e in self.data["emails"] if e["id"] != email_id]
-            save_data(self.data)
-            dlg.open = False
-            self.page.update()
-            self.render_email_list()
-        dlg = ft.AlertDialog(
-            title=ft.Text("确认删除"),
-            content=ft.Text("确定要删除这个邮箱吗？"),
-            actions=[
-                ft.TextButton("取消", on_click=close_dlg),
-                ft.TextButton("删除", on_click=confirm),
-            ],
-        )
-        self.page.dialog = dlg
-        dlg.open = True
-        self.page.update()
-
-    # ────────── 收件箱页 ──────────
-    def open_inbox(self, email_id):
-        email = next((e for e in self.data["emails"] if e["id"] == email_id), None)
-        if not email:
-            return
-        if email["expires_at"] <= time.time():
-            self.show_error("邮箱已过期", "该邮箱已超过1小时有效期")
-            return
-        self.current_email = email
-        self.current_messages = []
-        self.view = "inbox"
-        self.render_inbox()
-        self.start_refresh()
-
-    def render_inbox(self):
-        self.fab.visible = False
-        self.content.scroll = None
-        self.content.controls.clear()
-        self.content.controls.append(ft.Container(
-            content=ft.Row([
-                ft.IconButton(icon=ft.icons.ARROW_BACK, icon_size=24, on_click=lambda e: self.back_to_list()),
-                ft.Text(self.current_email["address"], size=16, weight=ft.FontWeight.W_500, expand=True),
-                ft.IconButton(icon=ft.icons.REFRESH, icon_size=24, on_click=lambda e: self.refresh_inbox()),
-            ]),
-            padding=ft.padding.only(8, 55, 8, 12),
-        ))
-        self.msg_list = ft.Column(spacing=8, expand=True, scroll=ft.ScrollMode.AUTO)
-        self.content.controls.append(self.msg_list)
-        self.render_messages()
-        self.refresh_inbox()
-        self.page.update()
-
-    def refresh_inbox(self):
-        if not self.current_email:
-            return
-        def task():
-            try:
-                token = api_get_token(self.current_email["address"], self.current_email["password"])
-                self.current_email["token"] = token
-                messages = api_get_messages(token)
-                self.current_messages = messages
-                unread = sum(1 for m in messages if not m.get("seen", False))
-                self.current_email["unread"] = unread
-                save_data(self.data)
-                self.render_messages()
-            except Exception as ex:
-                pass
-        threading.Thread(target=task, daemon=True).start()
-
-    def render_messages(self):
-        self.msg_list.controls.clear()
-        if not self.current_messages:
-            self.msg_list.controls.append(ft.Container(
-                content=ft.Column([
-                    ft.Text("📭", size=80),
-                    ft.Text("暂无邮件", size=20, weight=ft.FontWeight.W_500, color=ft.colors.GREY_600),
-                    ft.Text("发送邮件到这个邮箱地址\n新邮件会自动显示在这里", size=13, color=ft.colors.GREY_400, text_align=ft.TextAlign.CENTER),
-                ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=16),
-                padding=ft.padding.only(0, 80, 0, 80),
-                alignment=ft.alignment.center,
-            ))
-        else:
-            for msg in self.current_messages:
-                sender = msg.get("from", {}).get("address", "未知") if isinstance(msg.get("from"), dict) else str(msg.get("from", "未知"))
-                subject = msg.get("subject", "(无主题)")
-                is_unread = not msg.get("seen", False)
-                self.msg_list.controls.append(ft.Container(
-                    content=ft.Column([
-                        ft.Row([
-                            ft.Text(sender, size=14, weight=ft.FontWeight.W_500 if is_unread else ft.FontWeight.NORMAL, expand=True),
-                            ft.Text(msg.get("createdAt", "")[5:16], size=11, color=ft.colors.GREY_400),
-                        ]),
-                        ft.Text(subject, size=13, color=ft.colors.GREY_700 if is_unread else ft.colors.GREY_400),
-                    ], spacing=3),
-                    bgcolor=ft.colors.WHITE,
-                    border_radius=10,
-                    padding=14,
-                    margin=ft.margin.only(16, 4, 16, 4),
-                    on_click=lambda e, m=msg: self.open_message(m),
-                ))
-        self.page.update()
-
-    def open_message(self, msg):
-        self.current_msg = msg
-        self.view = "detail"
-        self.stop_refresh()
-        self.render_message_detail()
-
-    def render_message_detail(self):
-        self.fab.visible = False
-        self.content.scroll = ft.ScrollMode.AUTO
-        self.content.controls.clear()
-        self.content.controls.append(ft.Container(
-            content=ft.Row([
-                ft.IconButton(icon=ft.icons.ARROW_BACK, icon_size=24, on_click=lambda e: self.back_to_inbox()),
-                ft.Text("邮件详情", size=16, weight=ft.FontWeight.W_500),
-            ]),
-            padding=ft.padding.only(8, 55, 8, 12),
-        ))
-        sender = self.current_msg.get("from", {}).get("address", "未知") if isinstance(self.current_msg.get("from"), dict) else str(self.current_msg.get("from", "未知"))
-        self.content.controls.append(ft.Container(
-            content=ft.Column([
-                ft.Text(self.current_msg.get("subject", "(无主题)"), size=18, weight=ft.FontWeight.BOLD),
-                ft.Text(f"发件人：{sender}", size=13, color=ft.colors.GREY_500),
-                ft.Text(f"时间：{self.current_msg.get('createdAt', '')}", size=12, color=ft.colors.GREY_400),
-                ft.Divider(height=20),
-                ft.Text(self.current_msg.get("text", self.current_msg.get("intro", "")), size=14),
-            ], spacing=8),
-            padding=20,
-        ))
-        self.page.update()
-        # 标记已读
-        def mark_read():
-            try:
-                requests.patch(f"{API_BASE}/messages/{self.current_msg['id']}",
-                    headers={"Authorization": f"Bearer {self.current_email['token']}"},
-                    json={"seen": True}, timeout=5)
-            except:
-                pass
-        threading.Thread(target=mark_read, daemon=True).start()
-
-    def back_to_list(self):
-        self.view = "list"
-        self.current_email = None
-        self.stop_refresh()
-        self.render_email_list()
-
-    def back_to_inbox(self):
-        self.view = "inbox"
-        self.render_inbox()
-
-    def start_refresh(self):
-        self.stop_refresh()
-        def timer():
-            while self.view == "inbox":
-                time.sleep(APP_CONFIG["auto_refresh_seconds"])
-                if self.view == "inbox":
-                    self.refresh_inbox()
-        self.refresh_timer = threading.Thread(target=timer, daemon=True)
-        self.refresh_timer.start()
-
-    def stop_refresh(self):
-        self.refresh_timer = None
-
-    # ────────── 号码页面 ──────────
-    def render_phone_page(self):
-        if self.is_disabled:
-            self.show_disabled_page(self.remote_config.get("maintenance", "否") == "是")
-            return
-        self.fab.visible = False
-        self.content.scroll = ft.ScrollMode.AUTO
-        self.content.controls.clear()
-        self.content.controls.append(ft.Container(
-            content=ft.Text("临时号码", size=28, weight=ft.FontWeight.BOLD),
-            padding=ft.padding.only(20, 40, 20, 10),
-        ))
-        self.content.controls.append(ft.Container(
-            content=ft.Text("公开免费接码号码，所有人可见短信，请勿用于重要账号", size=13, color=ft.colors.GREY_500),
-            padding=ft.padding.only(20, 0, 20, 16),
-        ))
-        for item in APP_CONFIG.get("phone_numbers", []):
-            self.content.controls.append(ft.Container(
-                content=ft.Row([
-                    ft.Column([
-                        ft.Text(item["country"], size=12, color=ft.colors.GREY_500),
-                        ft.Text(item["number"], size=16, weight=ft.FontWeight.W_500),
-                    ], spacing=2, expand=True),
-                    ft.ElevatedButton(
-                        "复制",
-                        style=ft.ButtonStyle(
-                            bgcolor=ft.colors.BLUE_50,
-                            color=THEME_COLOR,
-                            shape=ft.RoundedRectangleBorder(radius=8),
-                        ),
-                        on_click=lambda e, num=item["number"]: self.copy_text(num),
-                    ),
-                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                bgcolor=ft.colors.WHITE,
-                border_radius=12,
-                padding=16,
-                margin=ft.margin.only(16, 6, 16, 6),
-            ))
-        self.content.controls.append(ft.Container(height=30))
-        self.page.update()
-
-    def copy_text(self, text):
-        self.page.set_clipboard(text)
-        def close_dlg(e):
-            dlg.open = False
-            self.page.update()
-        dlg = ft.AlertDialog(
-            content=ft.Text(f"已复制：{text}"),
-            actions=[ft.TextButton("知道了", on_click=close_dlg)],
-        )
-        self.page.dialog = dlg
-        dlg.open = True
-        self.page.update()
-
-    # ────────── Supabase 认证 ──────────
-    def _supabase_headers(self):
-        return {
-            "apikey": APP_CONFIG.get("supabase_anon_key", ""),
-            "Content-Type": "application/json",
-        }
-
-    def _supabase_url(self):
-        return APP_CONFIG.get("supabase_url", "").rstrip("/")
-
-    def supabase_signup(self, email, password, qq=""):
-        try:
-            r = requests.post(
-                f"{self._supabase_url()}/auth/v1/signup",
-                headers=self._supabase_headers(),
-                json={"email": email, "password": password, "data": {"qq": qq}},
-                timeout=15,
-            )
-            data = r.json()
-            if r.status_code in (200, 201):
-                return True, data
-            return False, data.get("msg", data.get("error_description", "注册失败"))
-        except Exception as e:
-            return False, str(e)
-
-    def supabase_login(self, email, password):
-        try:
-            r = requests.post(
-                f"{self._supabase_url()}/auth/v1/token?grant_type=password",
-                headers=self._supabase_headers(),
-                json={"email": email, "password": password},
-                timeout=15,
-            )
-            data = r.json()
-            if r.status_code == 200:
-                return True, data
-            return False, data.get("msg", data.get("error_description", "登录失败"))
-        except Exception as e:
-            return False, str(e)
-
-    def supabase_send_otp(self, email):
-        try:
-            r = requests.post(
-                f"{self._supabase_url()}/auth/v1/otp",
-                headers=self._supabase_headers(),
-                json={"email": email},
-                timeout=15,
-            )
-            if r.status_code in (200, 201):
-                return True, "验证码已发送"
-            data = r.json()
-            return False, data.get("msg", data.get("error_description", "发送失败"))
-        except Exception as e:
-            return False, str(e)
-
-    def supabase_verify_otp(self, email, token):
-        try:
-            r = requests.post(
-                f"{self._supabase_url()}/auth/v1/verify",
-                headers=self._supabase_headers(),
-                json={"email": email, "token": token, "type": "email"},
-                timeout=15,
-            )
-            data = r.json()
-            if r.status_code == 200:
-                return True, data
-            return False, data.get("msg", data.get("error_description", "验证失败"))
-        except Exception as e:
-            return False, str(e)
-
-    def _save_supabase_session(self, auth_data):
-        user = auth_data.get("user", {})
-        self.current_user = {
-            "id": user.get("id"),
-            "email": user.get("email"),
-            "qq": (user.get("user_metadata") or {}).get("qq", ""),
-            "nickname": (user.get("user_metadata") or {}).get("qq", user.get("email", "用户"))[:8],
-            "access_token": auth_data.get("access_token"),
-            "refresh_token": auth_data.get("refresh_token"),
-        }
-        self.data["current_user"] = self.current_user
-        save_data(self.data)
-
-    # ────────── 账号登录页面 ──────────
+    # ========== 登录页（QQ号+密码）==========
     def show_login_page(self):
-        self.fab.visible = False
-        self.content.scroll = ft.ScrollMode.AUTO
         self.content.controls.clear()
-
-        login_mode = {"value": "password"}  # password / otp
-
-        email_field = ft.TextField(
-            hint_text="邮箱地址",
-            prefix_icon=ft.icons.EMAIL_OUTLINED,
-            border_radius=12,
-            bgcolor=ft.colors.GREY_100,
-            border_color=ft.colors.TRANSPARENT,
-            height=52,
-            text_size=15,
+        qq_field = ft.TextField(
+            hint_text="QQ号", prefix_icon=ft.icons.PERSON_OUTLINE,
+            border_radius=12, bgcolor=ft.colors.GREY_100,
+            border_color=ft.colors.TRANSPARENT, height=52, text_size=15,
+            keyboard_type=ft.KeyboardType.NUMBER,
         )
         password_field = ft.TextField(
-            hint_text="密码",
-            prefix_icon=ft.icons.LOCK_OUTLINE,
-            password=True,
-            can_reveal_password=True,
-            border_radius=12,
-            bgcolor=ft.colors.GREY_100,
-            border_color=ft.colors.TRANSPARENT,
-            height=52,
-            text_size=15,
+            hint_text="密码", prefix_icon=ft.icons.LOCK_OUTLINE,
+            password=True, can_reveal_password=True,
+            border_radius=12, bgcolor=ft.colors.GREY_100,
+            border_color=ft.colors.TRANSPARENT, height=52, text_size=15,
         )
-        otp_field = ft.TextField(
-            hint_text="验证码",
-            prefix_icon=ft.icons.VERIFIED_USER_OUTLINED,
-            border_radius=12,
-            bgcolor=ft.colors.GREY_100,
-            border_color=ft.colors.TRANSPARENT,
-            height=52,
-            text_size=15,
-            width=150,
-        )
-        error_text = ft.Text("", size=13, color=ft.colors.RED, text_align=ft.TextAlign.CENTER)
-        success_text = ft.Text("", size=13, color=ft.colors.GREEN, text_align=ft.TextAlign.CENTER)
-
-        otp_row = ft.Row([], visible=False, alignment=ft.MainAxisAlignment.CENTER)
-        password_row = ft.Row([password_field], visible=True, alignment=ft.MainAxisAlignment.CENTER)
-
-        countdown = {"value": 0}
-        send_btn = ft.TextButton("发送验证码", style=ft.ButtonStyle(color=THEME_COLOR))
-
-        def update_mode(mode):
-            login_mode["value"] = mode
-            if mode == "password":
-                password_row.visible = True
-                otp_row.visible = False
-                password_tab.bgcolor = THEME_COLOR
-                password_tab.content.color = ft.colors.WHITE
-                otp_tab.bgcolor = ft.colors.TRANSPARENT
-                otp_tab.content.color = ft.colors.GREY_600
-            else:
-                password_row.visible = False
-                otp_row.visible = True
-                otp_tab.bgcolor = THEME_COLOR
-                otp_tab.content.color = ft.colors.WHITE
-                password_tab.bgcolor = ft.colors.TRANSPARENT
-                password_tab.content.color = ft.colors.GREY_600
-            self.page.update()
-
-        password_tab = ft.Container(
-            content=ft.Text("密码登录", size=14, weight=ft.FontWeight.W_500, color=ft.colors.WHITE),
-            bgcolor=THEME_COLOR,
-            border_radius=10,
-            padding=ft.padding.symmetric(horizontal=20, vertical=8),
-            on_click=lambda e: update_mode("password"),
-        )
-        otp_tab = ft.Container(
-            content=ft.Text("验证码登录", size=14, weight=ft.FontWeight.W_500, color=ft.colors.GREY_600),
-            bgcolor=ft.colors.TRANSPARENT,
-            border_radius=10,
-            padding=ft.padding.symmetric(horizontal=20, vertical=8),
-            on_click=lambda e: update_mode("otp"),
-        )
-
-        def do_send_otp(e):
-            email = email_field.value.strip()
-            if not email:
-                error_text.value = "请输入邮箱地址"
-                success_text.value = ""
-                self.page.update()
-                return
-            if "@" not in email:
-                error_text.value = "请输入有效的邮箱地址"
-                success_text.value = ""
-                self.page.update()
-                return
-            error_text.value = ""
-            success_text.value = "正在发送..."
-            self.page.update()
-            ok, msg = self.supabase_send_otp(email)
-            if ok:
-                success_text.value = "验证码已发送，请查收邮箱"
-                countdown["value"] = 60
-                send_btn.disabled = True
-                def tick():
-                    while countdown["value"] > 0:
-                        time.sleep(1)
-                        countdown["value"] -= 1
-                        send_btn.text = f"{countdown['value']}s后重发"
-                        self.page.update()
-                    send_btn.text = "发送验证码"
-                    send_btn.disabled = False
-                    self.page.update()
-                threading.Thread(target=tick, daemon=True).start()
-            else:
-                success_text.value = ""
-                error_text.value = f"发送失败：{msg}"
-            self.page.update()
-
-        send_btn.on_click = do_send_otp
-        otp_row.controls = [otp_field, send_btn]
+        error_text = ft.Text("", size=13, color=ft.colors.RED)
+        success_text = ft.Text("", size=13, color=ft.colors.GREEN)
 
         def do_login(e):
-            email = email_field.value.strip()
+            qq = qq_field.value.strip()
+            password = password_field.value
+            if not qq or not password:
+                error_text.value = "请填写QQ号和密码"
+                success_text.value = ""
+                self.page.update()
+                return
+            email = self.qq_email_map.get(qq)
             if not email:
-                error_text.value = "请输入邮箱地址"
+                error_text.value = "该QQ号未注册，请先注册"
                 success_text.value = ""
                 self.page.update()
                 return
@@ -901,173 +585,121 @@ class TempMailApp:
             success_text.value = "登录中..."
             self.page.update()
 
-            if login_mode["value"] == "password":
-                password = password_field.value
-                if not password:
-                    error_text.value = "请输入密码"
-                    success_text.value = ""
-                    self.page.update()
-                    return
-                ok, data = self.supabase_login(email, password)
-                if ok:
-                    self._save_supabase_session(data)
-                    success_text.value = ""
-                    self.render_me_page()
+            def login_thread():
+                ok, data = supabase_request("POST", "/auth/v1/token?grant_type=password",
+                    {"email": email, "password": password})
+                if ok and data.get("access_token"):
+                    self._save_session(data, qq)
+                    self.page.run_thread(lambda: self.go_to_main())
                 else:
-                    success_text.value = ""
-                    error_text.value = f"登录失败：{data}"
-                    self.page.update()
-            else:
-                token = otp_field.value.strip()
-                if not token:
-                    error_text.value = "请输入验证码"
-                    success_text.value = ""
-                    self.page.update()
-                    return
-                ok, data = self.supabase_verify_otp(email, token)
-                if ok:
-                    self._save_supabase_session(data)
-                    success_text.value = ""
-                    self.render_me_page()
-                else:
-                    success_text.value = ""
-                    error_text.value = f"验证失败：{data}"
-                    self.page.update()
+                    self.page.run_thread(lambda: self._show_error(data, error_text, success_text, "登录失败"))
+            threading.Thread(target=login_thread, daemon=True).start()
 
-        login_card = ft.Container(
-            content=ft.Column([
-                ft.Container(height=20),
-                ft.Row([
-                    ft.Container(
-                        content=ft.Icon(ft.icons.LOCK, size=28, color=ft.colors.WHITE),
-                        width=56, height=56,
-                        bgcolor=THEME_COLOR,
-                        border_radius=14,
-                        alignment=ft.alignment.center,
-                    ),
-                    ft.Container(width=12),
-                    ft.Column([
-                        ft.Text("欢迎回来", size=22, weight=ft.FontWeight.BOLD),
-                        ft.Text("登录后可同步你的邮箱数据", size=13, color=ft.colors.GREY_500),
-                    ], spacing=4),
-                ], alignment=ft.MainAxisAlignment.START),
-                ft.Container(height=20),
-                ft.Row([password_tab, otp_tab], alignment=ft.MainAxisAlignment.CENTER, spacing=8),
-                ft.Container(height=16),
-                email_field,
-                ft.Container(height=10),
-                password_row,
-                otp_row,
-                ft.Container(height=8),
-                error_text,
-                success_text,
-                ft.Container(height=8),
-                ft.Container(
-                    content=ft.ElevatedButton(
-                        "登录",
-                        expand=True,
-                        height=52,
-                        style=ft.ButtonStyle(
-                            bgcolor=THEME_COLOR,
-                            color=ft.colors.WHITE,
-                            shape=ft.RoundedRectangleBorder(radius=14),
-                            text_style=ft.TextStyle(size=16, weight=ft.FontWeight.BOLD),
-                        ),
-                        on_click=do_login,
-                    ),
-                ),
-                ft.Container(height=14),
-                ft.TextButton(
-                    "没有账号，立即注册",
-                    on_click=lambda e: self.show_register_page(),
-                    style=ft.ButtonStyle(color=THEME_COLOR),
-                ),
-                ft.Container(height=2),
-                ft.TextButton(
-                    "忘记密码？",
-                    on_click=lambda e: self.show_forgot_password_page(),
-                    style=ft.ButtonStyle(color=ft.colors.GREY_500),
-                ),
-                ft.Container(height=16),
-            ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
-            bgcolor=ft.colors.WHITE,
-            border_radius=20,
-            padding=ft.padding.only(24, 20, 24, 20),
-            margin=ft.margin.only(20, 50, 20, 20),
+        def go_register(e):
+            self.show_register_page()
+
+        login_btn = ft.ElevatedButton(
+            "登录", expand=True, height=50,
+            style=ft.ButtonStyle(bgcolor=THEME_COLOR, color=ft.colors.WHITE),
+            on_click=do_login,
+        )
+        register_btn = ft.OutlinedButton(
+            "注册", expand=True, height=50,
+            style=ft.ButtonStyle(color=THEME_COLOR),
+            on_click=go_register,
         )
 
+        self.content.controls.append(ft.Container(height=60))
+        self.content.controls.append(ft.Row([
+            ft.Container(content=ft.Icon(ft.icons.LOCK_OUTLINE, size=48, color=THEME_COLOR),
+                width=90, height=90, bgcolor=ft.colors.BLUE_50,
+                border_radius=45, alignment=ft.alignment.center),
+        ], alignment=ft.MainAxisAlignment.CENTER))
+        self.content.controls.append(ft.Container(height=20))
+        self.content.controls.append(ft.Row([ft.Text("欢迎回来", size=24, weight=ft.FontWeight.BOLD)], alignment=ft.MainAxisAlignment.CENTER))
+        self.content.controls.append(ft.Container(height=8))
+        self.content.controls.append(ft.Row([ft.Text("用QQ号和密码登录", size=14, color=ft.colors.GREY_500)], alignment=ft.MainAxisAlignment.CENTER))
+        self.content.controls.append(ft.Container(height=30))
+        self.content.controls.append(ft.Container(content=qq_field, padding=ft.padding.symmetric(horizontal=24)))
+        self.content.controls.append(ft.Container(height=12))
+        self.content.controls.append(ft.Container(content=password_field, padding=ft.padding.symmetric(horizontal=24)))
+        self.content.controls.append(ft.Container(height=8))
+        self.content.controls.append(ft.Container(content=error_text, padding=ft.padding.symmetric(horizontal=24)))
+        self.content.controls.append(ft.Container(content=success_text, padding=ft.padding.symmetric(horizontal=24)))
+        self.content.controls.append(ft.Container(height=16))
         self.content.controls.append(ft.Container(
-            content=login_card,
-            expand=True,
-            alignment=ft.alignment.center,
+            content=ft.Row([login_btn, register_btn], spacing=12),
+            padding=ft.padding.symmetric(horizontal=24),
         ))
+        self.content.controls.append(ft.Container(height=16))
         self.page.update()
 
+    # ========== 注册页（QQ号+邮箱+数字验证码+密码）==========
     def show_register_page(self):
-        self.fab.visible = False
-        self.content.scroll = ft.ScrollMode.AUTO
         self.content.controls.clear()
+        self._pending_code = None  # 保存生成的验证码
+        qq_field = ft.TextField(hint_text="QQ号", prefix_icon=ft.icons.PERSON_OUTLINE,
+            border_radius=12, bgcolor=ft.colors.GREY_100, border_color=ft.colors.TRANSPARENT,
+            height=52, text_size=15, keyboard_type=ft.KeyboardType.NUMBER)
+        email_field = ft.TextField(hint_text="邮箱地址", prefix_icon=ft.icons.EMAIL_OUTLINED,
+            border_radius=12, bgcolor=ft.colors.GREY_100, border_color=ft.colors.TRANSPARENT,
+            height=52, text_size=15)
+        code_field = ft.TextField(hint_text="邮箱验证码", prefix_icon=ft.icons.VERIFIED_USER_OUTLINED,
+            border_radius=12, bgcolor=ft.colors.GREY_100, border_color=ft.colors.TRANSPARENT,
+            height=52, text_size=15, width=170, keyboard_type=ft.KeyboardType.NUMBER)
+        password_field = ft.TextField(hint_text="密码（至少6位）", prefix_icon=ft.icons.LOCK_OUTLINE,
+            password=True, can_reveal_password=True, border_radius=12, bgcolor=ft.colors.GREY_100,
+            border_color=ft.colors.TRANSPARENT, height=52, text_size=15)
+        confirm_field = ft.TextField(hint_text="确认密码", prefix_icon=ft.icons.LOCK_OUTLINE,
+            password=True, can_reveal_password=True, border_radius=12, bgcolor=ft.colors.GREY_100,
+            border_color=ft.colors.TRANSPARENT, height=52, text_size=15)
+        error_text = ft.Text("", size=13, color=ft.colors.RED)
+        success_text = ft.Text("", size=13, color=ft.colors.GREEN)
+        countdown = {"value": 0}
 
-        email_field = ft.TextField(
-            hint_text="邮箱地址",
-            prefix_icon=ft.icons.EMAIL_OUTLINED,
-            border_radius=12,
-            bgcolor=ft.colors.GREY_100,
-            border_color=ft.colors.TRANSPARENT,
-            height=52,
-            text_size=15,
-        )
-        qq_field = ft.TextField(
-            hint_text="QQ号（选填）",
-            prefix_icon=ft.icons.PERSON_OUTLINE,
-            border_radius=12,
-            bgcolor=ft.colors.GREY_100,
-            border_color=ft.colors.TRANSPARENT,
-            height=52,
-            text_size=15,
-        )
-        password_field = ft.TextField(
-            hint_text="设置密码（至少6位）",
-            prefix_icon=ft.icons.LOCK_OUTLINE,
-            password=True,
-            can_reveal_password=True,
-            border_radius=12,
-            bgcolor=ft.colors.GREY_100,
-            border_color=ft.colors.TRANSPARENT,
-            height=52,
-            text_size=15,
-        )
-        confirm_field = ft.TextField(
-            hint_text="确认密码",
-            prefix_icon=ft.icons.LOCK_OUTLINE,
-            password=True,
-            can_reveal_password=True,
-            border_radius=12,
-            bgcolor=ft.colors.GREY_100,
-            border_color=ft.colors.TRANSPARENT,
-            height=52,
-            text_size=15,
-        )
-        error_text = ft.Text("", size=13, color=ft.colors.RED, text_align=ft.TextAlign.CENTER)
-        success_text = ft.Text("", size=13, color=ft.colors.GREEN, text_align=ft.TextAlign.CENTER)
+        def send_code(e):
+            email = email_field.value.strip()
+            if not email:
+                error_text.value = "请先输入邮箱"
+                success_text.value = ""
+                self.page.update()
+                return
+            if countdown["value"] > 0:
+                return
+            # 生成 6 位随机数字验证码
+            self._pending_code = str(random.randint(100000, 999999))
+            error_text.value = ""
+            success_text.value = "发送中..."
+            self.page.update()
+
+            def send_thread():
+                ok, msg = send_email_code(email, self._pending_code)
+                if ok:
+                    self.page.run_thread(lambda: self._code_sent(send_btn, countdown, success_text))
+                else:
+                    self.page.run_thread(lambda: self._show_error(msg, error_text, success_text, "发送失败"))
+            threading.Thread(target=send_thread, daemon=True).start()
+
+        send_btn = ft.TextButton("发送验证码", on_click=send_code)
 
         def do_register(e):
-            email = email_field.value.strip()
             qq = qq_field.value.strip()
+            email = email_field.value.strip()
+            code = code_field.value.strip()
             password = password_field.value
             confirm = confirm_field.value
-            if not email:
-                error_text.value = "请输入邮箱地址"
+            if not qq or not email or not code or not password or not confirm:
+                error_text.value = "请填写完整信息"
                 success_text.value = ""
                 self.page.update()
                 return
-            if "@" not in email:
-                error_text.value = "请输入有效的邮箱地址"
+            if not self._pending_code:
+                error_text.value = "请先获取验证码"
                 success_text.value = ""
                 self.page.update()
                 return
-            if not password or len(password) < 6:
-                error_text.value = "密码至少6位"
+            if code != self._pending_code:
+                error_text.value = "验证码错误"
                 success_text.value = ""
                 self.page.update()
                 return
@@ -1076,524 +708,1097 @@ class TempMailApp:
                 success_text.value = ""
                 self.page.update()
                 return
-            error_text.value = ""
-            success_text.value = "注册中..."
-            self.page.update()
-            ok, data = self.supabase_signup(email, password, qq)
-            if ok:
-                if data.get("user") and data.get("session"):
-                    self._save_supabase_session(data)
-                    success_text.value = ""
-                    self.render_me_page()
-                else:
-                    success_text.value = "注册成功！请去邮箱验证后登录"
-                    self.page.update()
-            else:
+            if len(password) < 6:
+                error_text.value = "密码至少6位"
                 success_text.value = ""
-                error_text.value = f"注册失败：{data}"
-                self.page.update()
-
-        register_card = ft.Container(
-            content=ft.Column([
-                ft.Container(height=16),
-                ft.Row([
-                    ft.Container(
-                        content=ft.Icon(ft.icons.PERSON_ADD, size=26, color=ft.colors.WHITE),
-                        width=52, height=52,
-                        bgcolor=THEME_COLOR,
-                        border_radius=14,
-                        alignment=ft.alignment.center,
-                    ),
-                    ft.Container(width=12),
-                    ft.Column([
-                        ft.Text("创建账号", size=20, weight=ft.FontWeight.BOLD),
-                        ft.Text("注册后可同步你的邮箱数据", size=12, color=ft.colors.GREY_500),
-                    ], spacing=4),
-                ], alignment=ft.MainAxisAlignment.START),
-                ft.Container(height=20),
-                email_field,
-                ft.Container(height=10),
-                qq_field,
-                ft.Container(height=10),
-                password_field,
-                ft.Container(height=10),
-                confirm_field,
-                ft.Container(height=8),
-                error_text,
-                success_text,
-                ft.Container(height=8),
-                ft.Container(
-                    content=ft.ElevatedButton(
-                        "注册",
-                        expand=True,
-                        height=52,
-                        style=ft.ButtonStyle(
-                            bgcolor=THEME_COLOR,
-                            color=ft.colors.WHITE,
-                            shape=ft.RoundedRectangleBorder(radius=14),
-                            text_style=ft.TextStyle(size=16, weight=ft.FontWeight.BOLD),
-                        ),
-                        on_click=do_register,
-                    ),
-                ),
-                ft.Container(height=12),
-                ft.TextButton(
-                    "已有账号，返回登录",
-                    on_click=lambda e: self.show_login_page(),
-                    style=ft.ButtonStyle(color=THEME_COLOR),
-                ),
-                ft.Container(height=16),
-            ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
-            bgcolor=ft.colors.WHITE,
-            border_radius=20,
-            padding=ft.padding.only(24, 20, 24, 20),
-            margin=ft.margin.only(20, 40, 20, 20),
-        )
-
-        self.content.controls.append(ft.Container(
-            content=register_card,
-            expand=True,
-            alignment=ft.alignment.center,
-        ))
-        self.page.update()
-
-    def show_forgot_password_page(self):
-        self.fab.visible = False
-        self.content.scroll = None
-        self.content.controls.clear()
-
-        email_field = ft.TextField(
-            hint_text="输入注册邮箱",
-            prefix_icon=ft.icons.EMAIL_OUTLINED,
-            border_radius=12,
-            bgcolor=ft.colors.GREY_100,
-            border_color=ft.colors.TRANSPARENT,
-            height=52,
-            text_size=15,
-        )
-        result_text = ft.Text("", size=14, color=ft.colors.GREEN, text_align=ft.TextAlign.CENTER)
-        error_text = ft.Text("", size=13, color=ft.colors.RED, text_align=ft.TextAlign.CENTER)
-
-        def do_recover(e):
-            email = email_field.value.strip()
-            if not email or "@" not in email:
-                error_text.value = "请输入有效的邮箱地址"
-                result_text.value = ""
                 self.page.update()
                 return
             error_text.value = ""
-            result_text.value = "发送中..."
-            self.page.update()
-            try:
-                r = requests.post(
-                    f"{self._supabase_url()}/auth/v1/recover",
-                    headers=self._supabase_headers(),
-                    json={"email": email},
-                    timeout=15,
-                )
-                if r.status_code in (200, 201):
-                    result_text.value = "重置密码邮件已发送，请去邮箱点击链接重置密码"
-                else:
-                    data = r.json()
-                    result_text.value = ""
-                    error_text.value = f"发送失败：{data.get('msg', data.get('error_description', '未知错误'))}"
-            except Exception as ex:
-                result_text.value = ""
-                error_text.value = f"发送失败：{str(ex)}"
+            success_text.value = "注册中..."
             self.page.update()
 
-        card = ft.Container(
+            def reg_thread():
+                ok, data = supabase_request("POST", "/auth/v1/signup",
+                    {"email": email, "password": password, "data": {"qq": qq}})
+                if ok and data.get("access_token"):
+                    # 注册成功且自动登录
+                    self.qq_email_map[qq] = email
+                    self.data["qq_email_map"] = self.qq_email_map
+                    self._save_session(data, qq)
+                    self.page.run_thread(lambda: self.go_to_main())
+                elif ok and (data.get("id") or data.get("user")):
+                    # 注册成功，但 Supabase 需要邮箱验证
+                    # 我们已经通过 EmailJS 验证了邮箱，所以直接用密码登录
+                    ok2, data2 = supabase_request("POST", "/auth/v1/token?grant_type=password",
+                        {"email": email, "password": password})
+                    if ok2 and data2.get("access_token"):
+                        self.qq_email_map[qq] = email
+                        self.data["qq_email_map"] = self.qq_email_map
+                        self._save_session(data2, qq)
+                        self.page.run_thread(lambda: self.go_to_main())
+                    else:
+                        # 登录失败，提示注册成功
+                        self.qq_email_map[qq] = email
+                        self.data["qq_email_map"] = self.qq_email_map
+                        save_data(self.data)
+                        self.page.run_thread(lambda: self._reg_success(error_text, success_text))
+                else:
+                    self.page.run_thread(lambda: self._show_error(data, error_text, success_text, "注册失败"))
+            threading.Thread(target=reg_thread, daemon=True).start()
+
+        def back(e):
+            self.show_login_page()
+
+        reg_btn = ft.ElevatedButton("注册", expand=True, height=50,
+            style=ft.ButtonStyle(bgcolor=THEME_COLOR, color=ft.colors.WHITE), on_click=do_register)
+
+        self.content.controls.append(ft.Container(height=50))
+        self.content.controls.append(ft.Row([ft.Text("注册账号", size=24, weight=ft.FontWeight.BOLD)], alignment=ft.MainAxisAlignment.CENTER))
+        self.content.controls.append(ft.Container(height=25))
+        self.content.controls.append(ft.Container(content=qq_field, padding=ft.padding.symmetric(horizontal=24)))
+        self.content.controls.append(ft.Container(height=12))
+        self.content.controls.append(ft.Container(content=email_field, padding=ft.padding.symmetric(horizontal=24)))
+        self.content.controls.append(ft.Container(height=12))
+        self.content.controls.append(ft.Container(
+            content=ft.Row([code_field, send_btn], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.padding.symmetric(horizontal=24),
+        ))
+        self.content.controls.append(ft.Container(height=12))
+        self.content.controls.append(ft.Container(content=password_field, padding=ft.padding.symmetric(horizontal=24)))
+        self.content.controls.append(ft.Container(height=12))
+        self.content.controls.append(ft.Container(content=confirm_field, padding=ft.padding.symmetric(horizontal=24)))
+        self.content.controls.append(ft.Container(height=8))
+        self.content.controls.append(ft.Container(content=error_text, padding=ft.padding.symmetric(horizontal=24)))
+        self.content.controls.append(ft.Container(content=success_text, padding=ft.padding.symmetric(horizontal=24)))
+        self.content.controls.append(ft.Container(height=16))
+        self.content.controls.append(ft.Container(content=reg_btn, padding=ft.padding.symmetric(horizontal=24)))
+        self.content.controls.append(ft.Container(height=16))
+        self.content.controls.append(ft.Row([ft.TextButton("已有账号？返回登录", on_click=back)], alignment=ft.MainAxisAlignment.CENTER))
+        self.page.update()
+
+    def _code_sent(self, send_btn, countdown, success_text):
+        success_text.value = "验证码已发送，请查收邮箱（6位数字）"
+        countdown["value"] = 60
+        send_btn.disabled = True
+
+        def tick():
+            while countdown["value"] > 0:
+                time.sleep(1)
+                countdown["value"] -= 1
+                try:
+                    send_btn.text = f"重新发送({countdown['value']}s)"
+                    self.page.update()
+                except:
+                    pass
+            try:
+                send_btn.text = "发送验证码"
+                send_btn.disabled = False
+                self.page.update()
+            except:
+                pass
+        threading.Thread(target=tick, daemon=True).start()
+
+    def _reg_success(self, error_text, success_text):
+        success_text.value = "注册成功！正在登录..."
+        error_text.value = ""
+        self.page.update()
+        time.sleep(1)
+        self.go_to_main()
+
+    def _show_error(self, data, error_text, success_text, prefix):
+        if isinstance(data, dict):
+            msg = data.get("msg") or data.get("error_description") or data.get("message") or str(data)
+        else:
+            msg = str(data)
+        error_text.value = prefix + "：" + str(msg)[:80] if prefix else str(msg)[:80]
+        success_text.value = ""
+        self.page.update()
+
+    def _save_session(self, data, qq=""):
+        user = data.get("user", {})
+        email = user.get("email", "")
+        if qq and qq not in self.qq_email_map:
+            self.qq_email_map[qq] = email
+            self.data["qq_email_map"] = self.qq_email_map
+        self.current_user = {
+            "email": email, "qq": qq, "id": user.get("id", ""),
+            "access_token": data.get("access_token", ""),
+        }
+        self.data["current_user"] = self.current_user
+        save_data(self.data)
+
+    # ========== 云端邮箱同步 ==========
+    def _load_emails_from_cloud(self):
+        """从云端加载用户的邮箱"""
+        if not self.current_user or not self.current_user.get("access_token"):
+            return
+        token = self.current_user["access_token"]
+        user_id = self.current_user.get("id", "")
+        try:
+            ok, data = supabase_request("GET", 
+                f"/rest/v1/user_emails?user_id=eq.{user_id}&select=email_data",
+                token=token)
+            if ok and isinstance(data, list):
+                cloud_emails = []
+                for item in data:
+                    email_data = item.get("email_data", {})
+                    if email_data:
+                        cloud_emails.append(email_data)
+                # 合并云端和本地邮箱，去重
+                local_emails = self.data.get("emails", [])
+                local_addresses = {e.get("address", "") for e in local_emails}
+                for ce in cloud_emails:
+                    if ce.get("address", "") not in local_addresses:
+                        local_emails.append(ce)
+                self.data["emails"] = local_emails
+                save_data(self.data)
+        except:
+            pass
+
+    def _save_email_to_cloud(self, email_data):
+        """保存邮箱到云端"""
+        if not self.current_user or not self.current_user.get("access_token"):
+            return
+        token = self.current_user["access_token"]
+        user_id = self.current_user.get("id", "")
+        address = email_data.get("address", "")
+        if not address or not user_id:
+            return
+        try:
+            # 先检查是否已存在
+            ok, data = supabase_request("GET",
+                f"/rest/v1/user_emails?user_id=eq.{user_id}&email_address=eq.{address}&select=id",
+                token=token)
+            if ok and isinstance(data, list) and len(data) > 0:
+                # 已存在，更新
+                record_id = data[0].get("id", "")
+                supabase_request("PATCH",
+                    f"/rest/v1/user_emails?id=eq.{record_id}",
+                    body={"email_data": email_data},
+                    token=token)
+            else:
+                # 不存在，插入
+                supabase_request("POST",
+                    "/rest/v1/user_emails",
+                    body={
+                        "user_id": user_id,
+                        "email_address": address,
+                        "email_data": email_data,
+                    },
+                    token=token)
+        except:
+            pass
+
+    def _delete_email_from_cloud(self, email_address):
+        """从云端删除邮箱"""
+        if not self.current_user or not self.current_user.get("access_token"):
+            return
+        token = self.current_user["access_token"]
+        user_id = self.current_user.get("id", "")
+        if not email_address or not user_id:
+            return
+        try:
+            supabase_request("DELETE",
+                f"/rest/v1/user_emails?user_id=eq.{user_id}&email_address=eq.{email_address}",
+                token=token)
+        except:
+            pass
+
+    def go_to_main(self):
+        self.current_tab = 0
+        self.build_main_ui()
+        self.render_email_list()
+        # 从云端加载邮箱
+        threading.Thread(target=self._load_emails_from_cloud, daemon=True).start()
+
+    # ========== 主界面 ==========
+    def build_main_ui(self):
+        self.page.controls.clear()
+        self.content = ft.Column(expand=True, scroll=ft.ScrollMode.AUTO, spacing=0)
+        self.page.add(self.content)
+        self.page.navigation_bar = ft.NavigationBar(
+            destinations=[
+                ft.NavigationDestination(icon=ft.icons.MAIL_OUTLINE, selected_icon=ft.icons.MAIL, label="邮箱"),
+                ft.NavigationDestination(icon=ft.icons.PHONE_OUTLINED, selected_icon=ft.icons.PHONE, label="号码"),
+                ft.NavigationDestination(icon=ft.icons.PERSON_OUTLINE, selected_icon=ft.icons.PERSON, label="主页"),
+            ],
+            on_change=self.on_tab_change, selected_index=0,
+        )
+        self.page.update()
+
+    def on_tab_change(self, e):
+        idx = e.control.selected_index
+        self.current_tab = idx
+        if idx == 0:
+            self.render_email_list()
+        elif idx == 1:
+            self.render_phone_page()
+        elif idx == 2:
+            self.render_me_page()
+
+    # ========== 邮箱列表 ==========
+    def render_email_list(self):
+        self.content.controls.clear()
+        self._stop_countdown()
+        # 标题固定，不可滑动
+        self.content.scroll = None
+        emails = self.data.get("emails", [])
+        # 标题区域（固定）
+        header = ft.Container(
             content=ft.Column([
-                ft.Container(height=30),
-                ft.Row([
-                    ft.Container(
-                        content=ft.Icon(ft.icons.HELP_OUTLINE, size=28, color=ft.colors.WHITE),
-                        width=56, height=56,
-                        bgcolor=ft.colors.ORANGE,
-                        border_radius=14,
-                        alignment=ft.alignment.center,
-                    ),
+                ft.Container(
+                    content=ft.Text("临时邮箱", size=28, weight=ft.FontWeight.BOLD),
+                    padding=ft.padding.only(20, 50, 20, 5),
+                ),
+                ft.Container(
+                    content=ft.Text("创建临时邮箱，自动接收邮件", size=13, color=ft.colors.GREY_500),
+                    padding=ft.padding.only(20, 0, 20, 10),
+                ),
+            ], spacing=0),
+            bgcolor=ft.colors.GREY_50,
+        )
+        self.content.controls.append(header)
+        # 邮箱列表区域（可滑动）
+        self._email_list_container = ft.ListView([], spacing=0, expand=True, padding=16)
+        self.content.controls.append(self._email_list_container)
+        self._render_email_items()
+        self.content.controls.append(ft.Container(height=80))
+        self.page.floating_action_button = ft.FloatingActionButton(
+            icon=ft.icons.ADD, bgcolor=THEME_COLOR, on_click=self.create_email)
+        self.page.update()
+        self._start_countdown()
+
+    def _render_email_items(self):
+        """渲染邮箱列表项"""
+        self._email_list_container.controls.clear()
+        emails = self.data.get("emails", [])
+        if not emails:
+            self._email_list_container.controls.append(ft.Container(
+                content=ft.Column([
+                    ft.Text("📭", size=80),
+                    ft.Text("暂无邮箱", size=20, weight=ft.FontWeight.W_500, color=ft.colors.GREY_600),
+                    ft.Text("点击右下角按钮创建临时邮箱", size=13, color=ft.colors.GREY_400),
+                ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=16),
+                alignment=ft.alignment.center,
+                padding=ft.padding.only(0, 80, 0, 0),
+            ))
+            return
+        for em in emails:
+            addr = em.get("address", "")
+            expires_at = em.get("expires_at", 0)
+            is_permanent = em.get("is_permanent", False)
+            remaining = expires_at - time.time()
+            if is_permanent:
+                exp_time = "永久有效"
+                exp_color = ft.colors.GREEN
+            elif remaining > 0:
+                mins = int(remaining // 60)
+                secs = int(remaining % 60)
+                if mins > 0:
+                    exp_time = f"还剩 {mins} 分 {secs} 秒"
+                else:
+                    exp_time = f"还剩 {secs} 秒"
+                exp_color = ft.colors.ORANGE if remaining < 300 else ft.colors.GREY_500
+            else:
+                exp_time = "已过期"
+                exp_color = ft.colors.RED
+            msg_count = len(em.get("messages", []))
+            email_id = em.get("id", "")
+            is_real = em.get("is_real", True)
+            domain = em.get("domain", "")
+            type_names = {"emalupe.com": "mail.tm", "guerrillamailblock.com": "Guerrilla", "maildrop.cc": "maildrop", "temp-mail.io": "temp-mail.io"}
+            type_name = type_names.get(domain, domain)
+            self._email_list_container.controls.append(ft.Container(
+                content=ft.Column([
+                    ft.Row([
+                        ft.Container(content=ft.Text(type_name, size=10, color=ft.colors.WHITE),
+                            bgcolor=ft.colors.GREEN if is_real else ft.colors.ORANGE,
+                            border_radius=6, padding=ft.padding.symmetric(2, 6),
+                            alignment=ft.alignment.center),
+                        ft.Container(width=8),
+                        ft.Text(addr, size=15, weight=ft.FontWeight.W_500, expand=True),
+                        ft.Container(content=ft.Text(str(msg_count), size=12, color=ft.colors.WHITE),
+                            bgcolor=THEME_COLOR, border_radius=10, padding=ft.padding.symmetric(4, 8),
+                            alignment=ft.alignment.center) if msg_count > 0 else ft.Container(),
+                    ]),
+                    ft.Text(exp_time, size=12, color=exp_color),
+                    ft.Row([
+                        ft.TextButton("查看收件箱", on_click=lambda e, email=em: self.show_inbox(email),
+                            style=ft.ButtonStyle(color=THEME_COLOR)),
+                        ft.TextButton("复制", on_click=lambda e, a=addr: self._copy_email(a),
+                            style=ft.ButtonStyle(color=ft.colors.GREY_600)),
+                        ft.TextButton("删除", on_click=lambda e, eid=email_id: self._delete_email(eid),
+                            style=ft.ButtonStyle(color=ft.colors.RED)),
+                    ], spacing=0),
+                ], spacing=4),
+                bgcolor=ft.colors.WHITE, border_radius=12, padding=16,
+                margin=ft.margin.only(16, 6, 16, 6),
+            ))
+
+    def _start_countdown(self):
+        """启动实时倒计时"""
+        if self._countdown_running:
+            return
+        self._countdown_running = True
+        self._on_email_page = True
+        def countdown_loop():
+            while self._countdown_running and self._on_email_page:
+                try:
+                    time.sleep(1)
+                    if not self._countdown_running or not self._on_email_page:
+                        break
+                    # 直接更新邮箱列表，每秒刷新倒计时
+                    self.page.run_thread(self._render_email_items)
+                except Exception as e:
+                    pass
+        self._countdown_thread = threading.Thread(target=countdown_loop, daemon=True)
+        self._countdown_thread.start()
+
+    def _stop_countdown(self):
+        """停止实时倒计时"""
+        self._countdown_running = False
+        self._on_email_page = False
+        self._remote_config = {}
+        self._countdown_thread = None
+
+    def create_email(self, e):
+        # 弹出选择邮箱类型的弹窗
+        email_types = [
+            {"name": "mail.tm 临时邮箱", "domain": "emalupe.com", "icon": "📧", "real": True, "provider": "mailtm"},
+            {"name": "Guerrilla 临时邮箱", "domain": "guerrillamailblock.com", "icon": "📨", "real": True, "provider": "guerrilla"},
+            {"name": "maildrop 临时邮箱", "domain": "maildrop.cc", "icon": "📬", "real": True, "provider": "maildrop"},
+            {"name": "temp-mail.io 临时邮箱", "domain": "temp-mail.io", "icon": "📮", "real": True, "provider": "tempmailio"},
+        ]
+        type_buttons = []
+        for et in email_types:
+            type_buttons.append(ft.Container(
+                content=ft.Row([
+                    ft.Text(et["icon"], size=24),
                     ft.Container(width=12),
                     ft.Column([
-                        ft.Text("找回密码", size=22, weight=ft.FontWeight.BOLD),
-                        ft.Text("输入邮箱，我们将发送重置链接", size=13, color=ft.colors.GREY_500),
-                    ], spacing=4),
+                        ft.Text(et["name"], size=16, weight=ft.FontWeight.W_500),
+                        ft.Text("@" + et["domain"], size=12, color=ft.colors.GREY_500),
+                    ], spacing=2, expand=True),
+                    ft.Text("可收信" if et["real"] else "模拟", size=11,
+                        color=ft.colors.GREEN if et["real"] else ft.colors.ORANGE),
                 ], alignment=ft.MainAxisAlignment.START),
-                ft.Container(height=30),
-                email_field,
-                ft.Container(height=12),
-                result_text,
-                error_text,
-                ft.Container(height=12),
-                ft.Container(
-                    content=ft.ElevatedButton(
-                        "发送重置邮件",
-                        expand=True,
-                        height=52,
-                        style=ft.ButtonStyle(
-                            bgcolor=THEME_COLOR,
-                            color=ft.colors.WHITE,
-                            shape=ft.RoundedRectangleBorder(radius=14),
-                            text_style=ft.TextStyle(size=16, weight=ft.FontWeight.BOLD),
-                        ),
-                        on_click=do_recover,
-                    ),
-                ),
-                ft.Container(height=16),
-                ft.TextButton(
-                    "返回登录",
-                    on_click=lambda e: self.show_login_page(),
-                    style=ft.ButtonStyle(color=THEME_COLOR),
-                ),
-                ft.Container(height=20),
-            ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
-            bgcolor=ft.colors.WHITE,
-            border_radius=20,
-            padding=ft.padding.only(24, 20, 24, 20),
-            margin=ft.margin.only(20, 60, 20, 20),
+                bgcolor=ft.colors.WHITE, border_radius=12, padding=16,
+                margin=ft.margin.only(0, 4, 0, 4),
+                on_click=lambda e, t=et: self._select_email_type(t),
+            ))
+        self.page.dialog = ft.AlertDialog(
+            title=ft.Text("选择邮箱类型", size=20, weight=ft.FontWeight.BOLD),
+            content=ft.Column(type_buttons, spacing=0, tight=True, scroll=ft.ScrollMode.AUTO, height=400),
+            actions=[
+                ft.TextButton("取消", on_click=lambda e: self._close_dialog()),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
         )
+        self.page.dialog.open = True
+        self.page.update()
 
+    def _close_dialog(self):
+        if self.page.dialog:
+            self.page.dialog.open = False
+            self.page.update()
+
+    def _select_email_type(self, email_type):
+        self._close_dialog()
+        self._pending_email_type = email_type
+        # 弹出选择有效期的弹窗
+        duration_options = [
+            {"name": "1小时", "hours": 1, "icon": "⏱️"},
+            {"name": "2小时", "hours": 2, "icon": "⏰"},
+            {"name": "永久", "hours": -1, "icon": "♾️"},
+        ]
+        dur_buttons = []
+        for d in duration_options:
+            dur_buttons.append(ft.Container(
+                content=ft.Row([
+                    ft.Text(d["icon"], size=24),
+                    ft.Container(width=12),
+                    ft.Text(d["name"], size=16, weight=ft.FontWeight.W_500, expand=True),
+                ], alignment=ft.MainAxisAlignment.START),
+                bgcolor=ft.colors.WHITE, border_radius=12, padding=16,
+                margin=ft.margin.only(0, 4, 0, 4),
+                on_click=lambda e, dur=d: self._select_email_duration(dur),
+            ))
+        self.page.dialog = ft.AlertDialog(
+            title=ft.Text("选择有效期", size=20, weight=ft.FontWeight.BOLD),
+            content=ft.Column(dur_buttons, spacing=0, tight=True),
+            actions=[
+                ft.TextButton("取消", on_click=lambda e: self._close_dialog()),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self.page.dialog.open = True
+        self.page.update()
+
+    def _select_email_duration(self, duration):
+        self._close_dialog()
+        email_type = self._pending_email_type
+        domain = email_type["domain"]
+        provider = email_type.get("provider", "mailtm")
+        hours = duration.get("hours", 1)
+        is_permanent = hours == -1
+
+        # 显示小弹窗加载动画
+        self.page.dialog = ft.AlertDialog(
+            content=ft.Container(
+                content=ft.Column([
+                    ft.ProgressRing(width=30, height=30, color=THEME_COLOR, stroke_width=3),
+                    ft.Container(height=8),
+                    ft.Text("创建中...", size=12, color=ft.colors.GREY_600),
+                ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=0),
+                width=120,
+                height=100,
+                padding=ft.padding.all(10),
+            ),
+        )
+        self.page.dialog.open = True
+        self.page.update()
+
+        def create_thread():
+            import random, string
+            if provider == "mailtm":
+                # mail.tm API
+                ok, result = mailtm_create()
+                if ok:
+                    new_email = {
+                        "id": str(int(time.time() * 1000)),
+                        "address": result["address"],
+                        "login": result["login"],
+                        "domain": result["domain"],
+                        "password": result["password"],
+                        "token": result["token"],
+                        "account_id": result["account_id"],
+                        "provider": "mailtm",
+                        "created_at": time.time(),
+                        "expires_at": time.time() + (hours * 3600 if not is_permanent else 9999999999),
+                        "is_permanent": is_permanent,
+                        "messages": [],
+                        "is_real": True,
+                    }
+                    self.data["emails"].insert(0, new_email)
+                    save_data(self.data)
+                    threading.Thread(target=lambda: self._save_email_to_cloud(new_email), daemon=True).start()
+                    self.page.run_thread(self._close_loading_dialog)
+                    self.page.run_thread(self.render_email_list)
+                else:
+                    self.page.run_thread(self._close_loading_dialog)
+                    self.page.run_thread(lambda: self._show_create_error(result))
+                    self.page.run_thread(self.render_email_list)
+            elif provider == "guerrilla":
+                # Guerrilla Mail API
+                ok, result = guerrilla_get_address()
+                if ok:
+                    addr = result.get("email_addr", "")
+                    login = addr.split("@")[0] if "@" in addr else ""
+                    new_email = {
+                        "id": str(int(time.time() * 1000)),
+                        "address": addr,
+                        "login": login,
+                        "domain": domain,
+                        "password": "",
+                        "token": result.get("sid_token", ""),
+                        "account_id": "",
+                        "provider": "guerrilla",
+                        "created_at": time.time(),
+                        "expires_at": time.time() + (hours * 3600 if not is_permanent else 9999999999),
+                        "is_permanent": is_permanent,
+                        "messages": [],
+                        "is_real": True,
+                    }
+                    self.data["emails"].insert(0, new_email)
+                    save_data(self.data)
+                    threading.Thread(target=lambda: self._save_email_to_cloud(new_email), daemon=True).start()
+                    self.page.run_thread(self._close_loading_dialog)
+                    self.page.run_thread(self.render_email_list)
+                else:
+                    self.page.run_thread(self._close_loading_dialog)
+                    self.page.run_thread(lambda: self._show_create_error(result))
+                    self.page.run_thread(self.render_email_list)
+            elif provider == "maildrop":
+                # maildrop API - 自定义邮箱名
+                login = "".join(random.choices(string.ascii_lowercase + string.digits, k=10))
+                addr = login + "@" + domain
+                new_email = {
+                    "id": str(int(time.time() * 1000)),
+                    "address": addr,
+                    "login": login,
+                    "domain": domain,
+                    "password": "",
+                    "token": "",
+                    "account_id": "",
+                    "provider": "maildrop",
+                    "created_at": time.time(),
+                    "expires_at": time.time() + (hours * 3600 if not is_permanent else 9999999999),
+                        "is_permanent": is_permanent,
+                    "messages": [],
+                    "is_real": True,
+                }
+                time.sleep(0.5)
+                self.data["emails"].insert(0, new_email)
+                save_data(self.data)
+                threading.Thread(target=lambda: self._save_email_to_cloud(new_email), daemon=True).start()
+                self.page.run_thread(self._close_loading_dialog)
+                self.page.run_thread(self.render_email_list)
+            elif provider == "tempmailio":
+                # temp-mail.io API
+                ok, result = temp_mail_io_create()
+                if ok:
+                    new_email = {
+                        "id": str(int(time.time() * 1000)),
+                        "address": result["address"],
+                        "login": result["login"],
+                        "domain": result["domain"],
+                        "password": "",
+                        "token": result["token"],
+                        "account_id": "",
+                        "provider": "tempmailio",
+                        "created_at": time.time(),
+                        "expires_at": time.time() + (hours * 3600 if not is_permanent else 9999999999),
+                        "is_permanent": is_permanent,
+                        "messages": [],
+                        "is_real": True,
+                    }
+                    self.data["emails"].insert(0, new_email)
+                    save_data(self.data)
+                    threading.Thread(target=lambda: self._save_email_to_cloud(new_email), daemon=True).start()
+                    self.page.run_thread(self._close_loading_dialog)
+                    self.page.run_thread(self.render_email_list)
+                else:
+                    self.page.run_thread(self._close_loading_dialog)
+                    self.page.run_thread(lambda: self._show_create_error(result))
+                    self.page.run_thread(self.render_email_list)
+        threading.Thread(target=create_thread, daemon=True).start()
+
+    def _close_loading_dialog(self):
+        if self.page.dialog:
+            self.page.dialog.open = False
+            self.page.update()
+
+    def _show_create_error(self, err):
+        self.page.snack_bar = ft.SnackBar(ft.Text("创建邮箱失败：" + str(err)[:50]))
+        self.page.snack_bar.open = True
+        self.page.update()
+
+    def _copy_email(self, addr):
+        self.page.set_clipboard(addr)
+        self.page.snack_bar = ft.SnackBar(ft.Text("已复制：" + addr))
+        self.page.snack_bar.open = True
+        self.page.update()
+
+    def _delete_email(self, email_id):
+        email_to_delete = None
+        for e in self.data.get("emails", []):
+            if e.get("id") == email_id:
+                email_to_delete = e
+                break
+        self.data["emails"] = [e for e in self.data.get("emails", []) if e.get("id") != email_id]
+        save_data(self.data)
+        # 从云端删除
+        if email_to_delete:
+            threading.Thread(target=lambda: self._delete_email_from_cloud(email_to_delete.get("address", "")), daemon=True).start()
+        self.page.snack_bar = ft.SnackBar(ft.Text("已删除邮箱"))
+        self.page.snack_bar.open = True
+        self.render_email_list()
+
+    # ========== 收件箱页面 ==========
+    def show_inbox(self, email):
+        self.current_email = email
+        self.content.controls.clear()
+        self.page.floating_action_button = None
+        # 顶部栏
         self.content.controls.append(ft.Container(
-            content=card,
-            expand=True,
-            alignment=ft.alignment.center,
+            content=ft.Row([
+                ft.IconButton(ft.icons.ARROW_BACK, icon_size=24, on_click=lambda e: self.render_email_list()),
+                ft.Text("收件箱", size=20, weight=ft.FontWeight.BOLD, expand=True),
+                ft.IconButton(ft.icons.REFRESH, icon_size=22, on_click=lambda e: self.refresh_inbox()),
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            padding=ft.padding.only(10, 45, 10, 5),
+        ))
+        self.content.controls.append(ft.Container(
+            content=ft.Text(email.get("address", ""), size=13, color=ft.colors.GREY_500),
+            padding=ft.padding.only(20, 0, 20, 10),
+        ))
+        self._inbox_list = ft.Column([], spacing=0)
+        self.content.controls.append(self._inbox_list)
+        self.content.controls.append(ft.Container(height=20))
+        self.page.update()
+        self.refresh_inbox()
+
+    def refresh_inbox(self):
+        email = self.current_email
+        provider = email.get("provider", "mailtm")
+
+        def refresh_thread():
+            if provider == "mailtm":
+                token = email.get("token", "")
+                ok, result = mailtm_get_messages(token)
+                if ok:
+                    messages = result.get("hydra:member", []) if isinstance(result, dict) else result
+                else:
+                    self.page.run_thread(lambda: self._show_inbox_error(str(result)))
+                    return
+            elif provider == "guerrilla":
+                token = email.get("token", "")
+                ok, messages = guerrilla_get_messages(token)
+                if not ok:
+                    self.page.run_thread(lambda: self._show_inbox_error(str(messages)))
+                    return
+            elif provider == "maildrop":
+                login = email.get("login", "")
+                ok, messages = maildrop_get_messages(login)
+                if not ok:
+                    self.page.run_thread(lambda: self._show_inbox_error(str(messages)))
+                    return
+            elif provider == "tempmailio":
+                addr = email.get("address", "")
+                ok, messages = temp_mail_io_get_messages(addr)
+                if not ok:
+                    self.page.run_thread(lambda: self._show_inbox_error(str(messages)))
+                    return
+            else:
+                messages = []
+
+            email["messages"] = messages
+            for em in self.data.get("emails", []):
+                if em.get("id") == email.get("id"):
+                    em["messages"] = messages
+                    break
+            save_data(self.data)
+            self.page.run_thread(lambda: self._render_inbox_messages(messages))
+        threading.Thread(target=refresh_thread, daemon=True).start()
+
+    def _render_inbox_messages(self, messages):
+        self._inbox_list.controls.clear()
+        if not messages:
+            self._inbox_list.controls.append(ft.Container(
+                content=ft.Column([
+                    ft.Text("📭", size=60),
+                    ft.Text("暂无邮件", size=16, color=ft.colors.GREY_500),
+                ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=12),
+                alignment=ft.alignment.center,
+                padding=ft.padding.only(0, 60, 0, 0),
+            ))
+        else:
+            for msg in messages:
+                # 适配不同 provider 的数据格式
+                if "mail_from" in msg:
+                    # Guerrilla Mail 格式
+                    sender = msg.get("mail_from", "未知")
+                    subject = msg.get("mail_subject", "(无主题)")
+                    date = msg.get("mail_date", "")
+                elif "from" in msg and isinstance(msg.get("from"), dict):
+                    # mail.tm 格式
+                    sender = msg.get("from", {}).get("address", "未知")
+                    subject = msg.get("subject", "(无主题)")
+                    date = msg.get("createdAt", "")
+                elif "from" in msg and isinstance(msg.get("from"), str) and "to" in msg:
+                    # temp-mail.io 格式
+                    sender = msg.get("from", "未知")
+                    subject = msg.get("subject", "(无主题)")
+                    date = msg.get("created_at", msg.get("date", ""))
+                else:
+                    # maildrop 或其他格式
+                    sender = msg.get("mailfrom", msg.get("from", "未知"))
+                    subject = msg.get("subject", "(无主题)")
+                    date = msg.get("date", "")
+                self._inbox_list.controls.append(ft.Container(
+                    content=ft.Column([
+                        ft.Row([
+                            ft.Text(str(sender), size=14, weight=ft.FontWeight.W_500, expand=True),
+                            ft.Text(str(date)[5:16] if len(str(date)) > 16 else str(date), size=11, color=ft.colors.GREY_400),
+                        ]),
+                        ft.Text(str(subject), size=13, color=ft.colors.GREY_700, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                    ], spacing=4),
+                    bgcolor=ft.colors.WHITE, border_radius=10, padding=14,
+                    margin=ft.margin.only(12, 4, 12, 4),
+                    on_click=lambda e, m=msg: self.show_email_detail(m),
+                ))
+        self.page.update()
+
+    def _show_inbox_error(self, err):
+        self._inbox_list.controls.clear()
+        self._inbox_list.controls.append(ft.Container(
+            content=ft.Text("加载失败：" + err[:50], size=14, color=ft.colors.RED),
+            padding=ft.padding.only(20, 20, 20, 0),
         ))
         self.page.update()
 
-    def logout_user(self, e=None):
-        self.current_user = None
-        self.data["current_user"] = None
-        save_data(self.data)
-        self.render_me_page()
+    # ========== 邮件详情页面 ==========
+    def show_email_detail(self, msg):
+        email = self.current_email
+        provider = email.get("provider", "mailtm")
+        msg_id = msg.get("id", "")
 
-    # ────────── 我的页面 ──────────
-    def render_me_page(self):
-        if self.is_disabled:
-            self.show_disabled_page(self.remote_config.get("maintenance", "否") == "是")
-            return
-        self.fab.visible = False
-        self.content.scroll = ft.ScrollMode.AUTO
         self.content.controls.clear()
+        self.page.floating_action_button = None
+        # 顶部固定栏
         self.content.controls.append(ft.Container(
-            content=ft.Text("我的", size=28, weight=ft.FontWeight.BOLD),
-            padding=ft.padding.only(20, 40, 20, 16),
+            content=ft.Row([
+                ft.IconButton(ft.icons.ARROW_BACK, icon_size=24, on_click=lambda e: self.show_inbox(email)),
+                ft.Text("邮件详情", size=20, weight=ft.FontWeight.BOLD, expand=True),
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            padding=ft.padding.only(10, 45, 10, 5),
+            bgcolor=ft.colors.WHITE,
         ))
-        # 用户卡片
-        email_count = len(self.data.get("emails", []))
-        total_unread = sum(e.get("unread", 0) for e in self.data.get("emails", []))
-        if self.current_user:
-            # 已登录：显示用户信息
-            user = self.current_user
-            nickname = user.get("nickname", "用户")
-            qq = user.get("qq", "")
-            email = user.get("email", "")
-            account_display = f"QQ: {qq}" if qq else f"邮箱: {email}"
-            self.content.controls.append(ft.Container(
-                content=ft.Row([
-                    ft.Container(
-                        content=ft.Text(nickname[0].upper() if nickname else "U", size=24, weight=ft.FontWeight.BOLD, color=ft.colors.WHITE),
-                        width=56, height=56,
-                        bgcolor=THEME_COLOR,
-                        border_radius=28,
-                        alignment=ft.alignment.center,
-                    ),
-                    ft.Container(width=14),
-                    ft.Column([
-                        ft.Text(nickname, size=18, weight=ft.FontWeight.BOLD),
-                        ft.Text(account_display, size=13, color=ft.colors.GREY_500),
-                    ], spacing=4, expand=True),
-                    ft.TextButton("退出", on_click=self.logout_user, style=ft.ButtonStyle(color=ft.colors.GREY_500)),
-                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                bgcolor=ft.colors.WHITE,
-                border_radius=14,
-                padding=16,
-                margin=ft.margin.only(16, 6, 16, 6),
+        # 分隔线
+        self.content.controls.append(ft.Container(height=1, bgcolor=ft.colors.GREY_200))
+        # 内容区域（可滑动）
+        self._detail_content = ft.ListView([
+            ft.ProgressBar(width=280, color=THEME_COLOR),
+            ft.Text("加载中...", size=14, color=ft.colors.GREY_500),
+        ], spacing=12, expand=True, padding=20)
+        self.content.controls.append(self._detail_content)
+        self.page.update()
+
+        def load_thread():
+            if provider == "mailtm":
+                token = email.get("token", "")
+                ok, detail = mailtm_read_message(token, msg_id)
+            elif provider == "guerrilla":
+                token = email.get("token", "")
+                ok, detail = guerrilla_read_message(token, msg_id)
+            elif provider == "maildrop":
+                login = email.get("login", "")
+                ok, detail = maildrop_read_message(login, msg_id)
+            elif provider == "tempmailio":
+                addr = email.get("address", "")
+                ok, detail = temp_mail_io_read_message(addr, msg_id)
+            else:
+                ok, detail = False, "未知邮箱类型"
+
+            if ok:
+                self.page.run_thread(lambda: self._render_email_detail(detail))
+            else:
+                self.page.run_thread(lambda: self._show_detail_error(str(detail)))
+        threading.Thread(target=load_thread, daemon=True).start()
+
+    def _render_email_detail(self, detail):
+        self._detail_content.controls.clear()
+        # 适配不同 provider 的数据格式
+        if "mail_from" in detail:
+            # Guerrilla Mail 格式
+            sender = detail.get("mail_from", "未知")
+            subject = detail.get("mail_subject", "(无主题)")
+            date = detail.get("mail_date", "")
+            body = detail.get("mail_body", detail.get("mail_excerpt", "(无内容)"))
+        elif "from" in detail and isinstance(detail.get("from"), dict):
+            # mail.tm 格式
+            sender = detail.get("from", {}).get("address", "未知")
+            subject = detail.get("subject", "(无主题)")
+            date = detail.get("createdAt", "")
+            body = detail.get("text", detail.get("html", "(无内容)"))
+            if isinstance(body, list):
+                body = body[0].get("text", "") if body else "(无内容)"
+        elif "from" in detail and isinstance(detail.get("from"), str) and "to" in detail:
+            # temp-mail.io 格式
+            sender = detail.get("from", "未知")
+            subject = detail.get("subject", "(无主题)")
+            date = detail.get("created_at", detail.get("date", ""))
+            body = detail.get("body_text", detail.get("body", "(无内容)"))
+        else:
+            # maildrop 或其他格式
+            sender = detail.get("mailfrom", detail.get("from", "未知"))
+            subject = detail.get("subject", "(无主题)")
+            date = detail.get("date", "")
+            body = detail.get("data", detail.get("body", "(无内容)"))
+
+        if "<" in str(body) and ">" in str(body):
+            import re
+            body = re.sub(r'<[^>]+>', '', str(body))
+        self._detail_content.controls.clear()
+        self._detail_content.controls.append(ft.Text(str(subject), size=18, weight=ft.FontWeight.BOLD))
+        self._detail_content.controls.append(ft.Container(height=8))
+        self._detail_content.controls.append(ft.Text("发件人：" + str(sender), size=13, color=ft.colors.GREY_600))
+        self._detail_content.controls.append(ft.Text("时间：" + str(date), size=13, color=ft.colors.GREY_600))
+        self._detail_content.controls.append(ft.Container(height=12))
+        self._detail_content.controls.append(ft.Container(height=1, bgcolor=ft.colors.GREY_200))
+        self._detail_content.controls.append(ft.Container(height=12))
+        self._detail_content.controls.append(ft.Text(str(body), size=14, color=ft.colors.GREY_800))
+        self.page.update()
+
+    def _show_detail_error(self, err):
+        self._detail_content.controls.clear()
+        self._detail_content.controls.append(ft.Text("加载失败：" + err[:50], size=14, color=ft.colors.RED))
+        self.page.update()
+
+    # ========== 号码页面 ==========
+    def render_phone_page(self):
+        self.content.controls.clear()
+        self.page.floating_action_button = None
+        self.content.controls.append(ft.Container(
+            content=ft.Row([
+                ft.Text("临时号码", size=28, weight=ft.FontWeight.BOLD, expand=True),
+                ft.IconButton(ft.icons.REFRESH, icon_size=22, on_click=lambda e: self.refresh_phone_numbers()),
+            ]),
+            padding=ft.padding.only(20, 50, 20, 10),
+        ))
+        self.content.controls.append(ft.Container(
+            content=ft.Text("免费接收短信验证码", size=13, color=ft.colors.GREY_500),
+            padding=ft.padding.only(20, 0, 20, 10),
+        ))
+        self._phone_list = ft.ListView([], spacing=0, expand=True, padding=16)
+        self.content.controls.append(self._phone_list)
+        
+        # 如果有缓存的号码，直接显示
+        if hasattr(self, '_cached_phone_numbers') and self._cached_phone_numbers:
+            self._render_phone_numbers(self._cached_phone_numbers)
+        else:
+            self._phone_list.controls.append(ft.Container(
+                content=ft.Column([
+                    ft.ProgressRing(width=40, height=40, color=THEME_COLOR, stroke_width=3),
+                    ft.Container(height=12),
+                    ft.Text("正在获取号码列表...", size=14, color=ft.colors.GREY_500),
+                ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                alignment=ft.alignment.center,
+                padding=ft.padding.only(0, 60, 0, 0),
+            ))
+            self.page.update()
+            self.refresh_phone_numbers()
+
+    def refresh_phone_numbers(self):
+        """刷新号码列表"""
+        def refresh_thread():
+            try:
+                html_content = sms_fetch_page("https://www.free-sms-receive.com/")
+                numbers = sms_parse_numbers(html_content)
+                self._cached_phone_numbers = numbers
+                self.page.run_thread(lambda: self._render_phone_numbers(numbers))
+            except Exception as e:
+                self.page.run_thread(lambda: self._show_phone_error(str(e)))
+        threading.Thread(target=refresh_thread, daemon=True).start()
+
+    def _render_phone_numbers(self, numbers):
+        """渲染号码列表"""
+        self._phone_list.controls.clear()
+        if not numbers:
+            self._phone_list.controls.append(ft.Container(
+                content=ft.Column([
+                    ft.Text("📱", size=60),
+                    ft.Text("暂无号码", size=16, color=ft.colors.GREY_500),
+                ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=12),
+                alignment=ft.alignment.center,
+                padding=ft.padding.only(0, 60, 0, 0),
             ))
         else:
-            # 未登录：显示登录按钮
-            self.content.controls.append(ft.Container(
-                content=ft.Column([
-                    ft.Row([
-                        ft.Container(
-                            content=ft.Icon(ft.icons.PERSON_OUTLINE, size=28, color=ft.colors.GREY_400),
-                            width=56, height=56,
-                            bgcolor=ft.colors.GREY_100,
-                            border_radius=28,
-                            alignment=ft.alignment.center,
-                        ),
-                        ft.Container(width=14),
+            for p in numbers:
+                self._phone_list.controls.append(ft.Container(
+                    content=ft.Row([
+                        ft.Container(content=ft.Icon(ft.icons.PHONE, size=24, color=THEME_COLOR),
+                            width=48, height=48, bgcolor=ft.colors.BLUE_50,
+                            border_radius=24, alignment=ft.alignment.center),
+                        ft.Container(width=12),
                         ft.Column([
-                            ft.Text("未登录", size=18, weight=ft.FontWeight.BOLD),
-                            ft.Text("登录后可同步数据", size=13, color=ft.colors.GREY_500),
-                        ], spacing=4, expand=True),
+                            ft.Text(p.get("country", ""), size=14, weight=ft.FontWeight.W_500),
+                            ft.Text(p.get("number", ""), size=16, weight=ft.FontWeight.BOLD),
+                        ], spacing=2, expand=True),
+                        ft.Icon(ft.icons.CHEVRON_RIGHT, size=20, color=ft.colors.GREY_400),
                     ]),
-                    ft.Container(height=12),
-                    ft.ElevatedButton(
-                        "登录 / 注册",
-                        expand=True,
-                        height=44,
-                        style=ft.ButtonStyle(
-                            bgcolor=THEME_COLOR,
-                            color=ft.colors.WHITE,
-                            shape=ft.RoundedRectangleBorder(radius=12),
-                        ),
-                        on_click=lambda e: self.show_login_page(),
-                    ),
-                ], spacing=0),
-                bgcolor=ft.colors.WHITE,
-                border_radius=14,
-                padding=16,
+                    bgcolor=ft.colors.WHITE, border_radius=12, padding=16,
+                    margin=ft.margin.only(0, 4, 0, 4),
+                    on_click=lambda e, phone=p: self.show_phone_messages(phone),
+                ))
+        self.page.update()
+
+    def _show_phone_error(self, err):
+        """显示号码错误"""
+        self._phone_list.controls.clear()
+        self._phone_list.controls.append(ft.Container(
+            content=ft.Column([
+                ft.Text("❌", size=60),
+                ft.Text("获取失败", size=16, color=ft.colors.RED),
+                ft.Text(str(err)[:50], size=12, color=ft.colors.GREY_500),
+            ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=12),
+            alignment=ft.alignment.center,
+            padding=ft.padding.only(0, 60, 0, 0),
+        ))
+        self.page.update()
+
+    def show_phone_messages(self, phone):
+        """显示号码收到的短信"""
+        self.current_phone = phone
+        self.content.controls.clear()
+        self.page.floating_action_button = None
+        # 顶部固定栏
+        self.content.controls.append(ft.Container(
+            content=ft.Row([
+                ft.IconButton(ft.icons.ARROW_BACK, icon_size=24, on_click=lambda e: self.render_phone_page()),
+                ft.Column([
+                    ft.Text(phone.get("number", ""), size=18, weight=ft.FontWeight.BOLD),
+                    ft.Text(phone.get("country", ""), size=12, color=ft.colors.GREY_500),
+                ], expand=True, spacing=2),
+                ft.IconButton(ft.icons.REFRESH, icon_size=22, on_click=lambda e: self.refresh_phone_messages()),
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            padding=ft.padding.only(10, 45, 10, 5),
+            bgcolor=ft.colors.WHITE,
+        ))
+        self.content.controls.append(ft.Container(height=1, bgcolor=ft.colors.GREY_200))
+        # 短信列表（可滑动）
+        self._sms_list = ft.ListView([], spacing=0, expand=True, padding=16)
+        self.content.controls.append(self._sms_list)
+        self.page.update()
+        self.refresh_phone_messages()
+
+    def refresh_phone_messages(self):
+        """刷新短信列表"""
+        phone = self.current_phone
+        url = phone.get("url", "")
+        
+        def refresh_thread():
+            try:
+                html_content = sms_fetch_page(url)
+                messages = sms_parse_messages(html_content)
+                self.page.run_thread(lambda: self._render_sms_messages(messages))
+            except Exception as e:
+                self.page.run_thread(lambda: self._show_sms_error(str(e)))
+        threading.Thread(target=refresh_thread, daemon=True).start()
+
+    def _render_sms_messages(self, messages):
+        """渲染短信列表"""
+        self._sms_list.controls.clear()
+        if not messages:
+            self._sms_list.controls.append(ft.Container(
+                content=ft.Column([
+                    ft.Text("📭", size=60),
+                    ft.Text("暂无短信", size=16, color=ft.colors.GREY_500),
+                ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=12),
+                alignment=ft.alignment.center,
+                padding=ft.padding.only(0, 60, 0, 0),
+            ))
+        else:
+            for msg in messages:
+                self._sms_list.controls.append(ft.Container(
+                    content=ft.Column([
+                        ft.Row([
+                            ft.Text(msg.get("sender", "未知"), size=14, weight=ft.FontWeight.W_500, expand=True),
+                            ft.Text(msg.get("time", ""), size=11, color=ft.colors.GREY_400),
+                        ]),
+                        ft.Container(height=4),
+                        ft.Text(msg.get("content", ""), size=13, color=ft.colors.GREY_700),
+                    ], spacing=0),
+                    bgcolor=ft.colors.WHITE, border_radius=10, padding=14,
+                    margin=ft.margin.only(0, 4, 0, 4),
+                ))
+        self.page.update()
+
+    def _show_sms_error(self, err):
+        """显示短信错误"""
+        self._sms_list.controls.clear()
+        self._sms_list.controls.append(ft.Container(
+            content=ft.Column([
+                ft.Text("❌", size=60),
+                ft.Text("获取失败", size=16, color=ft.colors.RED),
+                ft.Text(str(err)[:50], size=12, color=ft.colors.GREY_500),
+            ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=12),
+            alignment=ft.alignment.center,
+            padding=ft.padding.only(0, 60, 0, 0),
+        ))
+        self.page.update()
+
+    # ========== 我的页面 ==========
+    def render_me_page(self):
+        self.content.controls.clear()
+        self.page.floating_action_button = None
+        self.content.controls.append(ft.Container(
+            content=ft.Text("主页", size=28, weight=ft.FontWeight.BOLD),
+            padding=ft.padding.only(20, 50, 20, 10),
+        ))
+        if self.current_user:
+            qq = self.current_user.get("qq", "")
+            email = self.current_user.get("email", "")
+            avatar_text = (qq[0] if qq else "U").upper()
+            self.content.controls.append(ft.Container(
+                content=ft.Row([
+                    ft.Container(content=ft.Text(avatar_text, size=24, weight=ft.FontWeight.BOLD, color=ft.colors.WHITE),
+                        width=56, height=56, bgcolor=THEME_COLOR,
+                        border_radius=28, alignment=ft.alignment.center),
+                    ft.Container(width=14),
+                    ft.Column([
+                        ft.Text("QQ: " + qq, size=16, weight=ft.FontWeight.BOLD),
+                        ft.Text(email, size=13, color=ft.colors.GREY_500),
+                    ], spacing=4),
+                ]),
+                bgcolor=ft.colors.WHITE, border_radius=14, padding=16,
                 margin=ft.margin.only(16, 6, 16, 6),
             ))
-        # 统计卡片
+            self.content.controls.append(ft.Container(
+                content=ft.ElevatedButton("退出登录", expand=True, height=48,
+                    style=ft.ButtonStyle(bgcolor=ft.colors.RED, color=ft.colors.WHITE),
+                    on_click=self.logout),
+                padding=ft.padding.symmetric(horizontal=16),
+                margin=ft.margin.only(0, 20, 0, 0),
+            ))
+        else:
+            self.content.controls.append(ft.Container(
+                content=ft.Row([
+                    ft.Container(content=ft.Icon(ft.icons.PERSON_OUTLINE, size=28, color=ft.colors.GREY_400),
+                        width=56, height=56, bgcolor=ft.colors.GREY_100,
+                        border_radius=28, alignment=ft.alignment.center),
+                    ft.Container(width=14),
+                    ft.Column([
+                        ft.Text("未登录", size=18, weight=ft.FontWeight.BOLD),
+                        ft.Text("登录后可同步数据", size=13, color=ft.colors.GREY_500),
+                    ], spacing=4),
+                ]),
+                bgcolor=ft.colors.WHITE, border_radius=14, padding=16,
+                margin=ft.margin.only(16, 6, 16, 6),
+            ))
+            self.content.controls.append(ft.Container(
+                content=ft.ElevatedButton("登录 / 注册", expand=True, height=48,
+                    style=ft.ButtonStyle(bgcolor=THEME_COLOR, color=ft.colors.WHITE),
+                    on_click=lambda e: self.show_fullscreen_login()),
+                padding=ft.padding.symmetric(horizontal=16),
+                margin=ft.margin.only(0, 20, 0, 0),
+            ))
+        email_count = len(self.data.get("emails", []))
         self.content.controls.append(ft.Container(
             content=ft.Row([
                 ft.Column([
-                    ft.Text(str(email_count), size=24, weight=ft.FontWeight.BOLD, color=THEME_COLOR),
-                    ft.Text("邮箱数量", size=12, color=ft.colors.GREY_500),
-                ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, expand=True),
-                ft.VerticalDivider(width=1),
-                ft.Column([
-                    ft.Text(str(total_unread), size=24, weight=ft.FontWeight.BOLD, color=ft.colors.GREEN),
-                    ft.Text("未读邮件", size=12, color=ft.colors.GREY_500),
-                ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, expand=True),
-            ]),
-            bgcolor=ft.colors.WHITE,
-            border_radius=14,
-            padding=16,
-            margin=ft.margin.only(16, 6, 16, 6),
+                    ft.Text(str(email_count), size=24, weight=ft.FontWeight.BOLD),
+                    ft.Text("邮箱", size=12, color=ft.colors.GREY_500),
+                ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+            ], alignment=ft.MainAxisAlignment.SPACE_AROUND),
+            bgcolor=ft.colors.WHITE, border_radius=14, padding=20,
+            margin=ft.margin.only(16, 16, 16, 6),
         ))
-        # 设置列表
-        settings = [
-            ("邮箱有效期", f"{EMAIL_LIFETIME//3600}小时"),
-            ("自动刷新", f"{APP_CONFIG['auto_refresh_seconds']}秒"),
-            ("数据存储", "本地保存"),
-            ("关于", f"{APP_CONFIG['app_name']} v{APP_CONFIG['app_version']}"),
-        ]
-        for label, value in settings:
-            self.content.controls.append(ft.Container(
-                content=ft.Row([
-                    ft.Text(label, size=15),
-                    ft.Text(value, size=14, color=ft.colors.GREY_500),
-                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                bgcolor=ft.colors.WHITE,
-                padding=ft.padding.only(20, 16, 20, 16),
-                margin=ft.margin.only(16, 1, 16, 1),
-            ))
-        # 清除数据按钮
-        self.content.controls.append(ft.Container(height=20))
-        self.content.controls.append(ft.Container(
-            content=ft.ElevatedButton(
-                "清除所有数据",
-                expand=True,
-                height=48,
-                style=ft.ButtonStyle(
-                    bgcolor=ft.colors.RED,
-                    color=ft.colors.WHITE,
-                    shape=ft.RoundedRectangleBorder(radius=12),
+        self.page.update()
+
+    def logout(self, e):
+        # 显示加载中页面
+        self.page.controls.clear()
+        self.page.navigation_bar = None
+        loading_page = ft.Column([
+            ft.Container(expand=True),
+            ft.Row([
+                ft.Container(
+                    content=ft.ProgressRing(width=50, height=50, color=THEME_COLOR, stroke_width=4),
+                    width=120, height=120, alignment=ft.alignment.center,
                 ),
-                on_click=self.clear_all_data,
-            ),
-            padding=ft.padding.only(16, 0, 16, 30),
-        ))
+            ], alignment=ft.MainAxisAlignment.CENTER),
+            ft.Container(height=20),
+            ft.Row([ft.Text("正在退出登录...", size=16, color=ft.colors.GREY_600)], alignment=ft.MainAxisAlignment.CENTER),
+            ft.Container(expand=True),
+        ], expand=True, spacing=0)
+        self.page.add(loading_page)
         self.page.update()
-
-    def clear_all_data(self, e):
-        def confirm(e):
-            self.data = {"emails": []}
+        
+        # 延迟后退出
+        def do_logout():
+            time.sleep(1.2)
+            self.current_user = None
+            self.data["current_user"] = None
             save_data(self.data)
-            self.page.dialog.open = False
-            self.render_me_page()
-        dlg = ft.AlertDialog(
-            title=ft.Text("确认清除"),
-            content=ft.Text("确定要清除所有邮箱数据吗？此操作不可恢复。"),
-            actions=[
-                ft.TextButton("取消", on_click=lambda e: setattr(self.page.dialog, 'open', False)),
-                ft.TextButton("清除", on_click=confirm),
-            ],
-        )
-        self.page.dialog = dlg
-        dlg.open = True
-        self.page.update()
-
-    # ────────── 倒计时 ──────────
-    def start_countdown(self):
-        def timer():
-            while True:
-                time.sleep(1)
-                if self.current_tab == 0 and self.view == "list":
-                    self.update_email_times()
-        self.countdown_timer = threading.Thread(target=timer, daemon=True)
-        self.countdown_timer.start()
-
-    # ────────── 远程配置 ──────────
-    def start_remote_config_check(self):
-        # 启动时立即检查一次
-        try:
-            self.fetch_remote_config()
-            self.check_remote_config()
-        except:
-            pass
-
-        def timer():
-            while True:
-                try:
-                    self.fetch_remote_config()
-                    self.check_remote_config()
-                except:
-                    pass
-                time.sleep(10)
-        self.remote_config_timer = threading.Thread(target=timer, daemon=True)
-        self.remote_config_timer.start()
-
-    def fetch_remote_config(self):
-        try:
-            # 添加缓存控制头，避免 Gitee 缓存
-            headers = {
-                "Cache-Control": "no-cache",
-                "Pragma": "no-cache",
-                "If-Modified-Since": "0",
-            }
-            r = requests.get(APP_CONFIG["remote_config_url"], timeout=8, headers=headers)
-            r.raise_for_status()
-            config = r.json()
-            # 忽略说明字段
-            config.pop("_说明", None)
-            config.pop("_comment", None)
-            self.remote_config.update(config)
-        except:
-            pass
-
-    def check_remote_config(self):
-        enabled = self.remote_config.get("enabled", "是")
-        maintenance = self.remote_config.get("maintenance", "否")
-
-        # 运行时停用/维护检查
-        if enabled == "否" or maintenance == "是":
-            if not self.is_disabled:
-                self.is_disabled = True
-                self.show_disabled_page(maintenance == "是")
-        else:
-            if self.is_disabled:
-                self.is_disabled = False
-                self.hide_disabled_page()
-
-    def show_disabled_page(self, is_maintenance=False):
-        try:
-            self.stop_refresh()
-            self.fab.visible = False
-            self.content.scroll = None
-            self.content.controls.clear()
-            title = "应用维护中" if is_maintenance else "应用已停用"
-            desc = "应用正在维护，请稍后再试" if is_maintenance else "该应用已被管理员停用"
-            emoji = "⚠️" if is_maintenance else "🚫"
-            color = ft.colors.ORANGE if is_maintenance else ft.colors.RED
-
-            self.content.controls.append(ft.Container(
-                content=ft.Column([
-                    ft.Text(emoji, size=80),
-                    ft.Text(title, size=24, weight=ft.FontWeight.BOLD, color=color),
-                    ft.Text(desc, size=14, color=ft.colors.GREY_500),
-                    ft.Text("当前状态会自动更新，请保持网络连接", size=12, color=ft.colors.GREY_400),
-                ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=20),
-                padding=ft.padding.only(0, 120, 0, 0),
-                alignment=ft.alignment.center,
-            ))
-            self.page.update()
-        except:
-            pass
-
-    def hide_disabled_page(self):
-        self.current_tab = 0
-        self.page.navigation_bar.selected_index = 0
-        self.render_email_list()
-
-    def show_update_prompt(self, latest_version):
-        """普通更新提示，用户可以选择更新或稍后再说"""
-        def update_now(e):
-            dlg.open = False
-            self.page.update()
-            self.open_update_url()
-        def later(e):
-            dlg.open = False
-            self.page.update()
-        dlg = ft.AlertDialog(
-            title=ft.Text("发现新版本"),
-            content=ft.Text(f"当前版本：{APP_CONFIG['app_version']}\n最新版本：{latest_version}\n\n更新网盘密码:YoXi"),
-            actions=[
-                ft.TextButton("稍后再说", on_click=later),
-                ft.TextButton("立马更新", on_click=update_now),
-            ],
-        )
-        self.page.dialog = dlg
-        dlg.open = True
-        self.page.update()
-
-    def show_force_update_prompt(self, latest_version):
-        """强制更新，不更新就用不了"""
-        def update_now(e):
-            dlg.open = False
-            self.page.update()
-            self.open_update_url()
-        def exit_app(e):
-            # 退出应用
-            self.page.window_close()
-        dlg = ft.AlertDialog(
-            title=ft.Text("⚠️ 需要更新"),
-            content=ft.Text(f"当前版本：{APP_CONFIG['app_version']}\n最新版本：{latest_version}\n\n网盘密码:YoXi"),
-            actions=[
-                ft.TextButton("退出应用", on_click=exit_app),
-                ft.TextButton("立马更新", on_click=update_now),
-            ],
-        )
-        self.page.dialog = dlg
-        dlg.open = True
-        self.page.update()
-
-    def open_update_url(self):
-        """打开更新下载链接"""
-        update_url = APP_CONFIG.get("update_url", "https://wwawd.lanzouw.com/b01euptxsh")
-        try:
-            self.page.launch_url(update_url)
-        except:
-            pass
-
-    def show_announcement(self, announcement):
-        def close_dlg(e):
-            dlg.open = False
-            self.page.update()
-        dlg = ft.AlertDialog(
-            title=ft.Text("📢 公告"),
-            content=ft.Text(announcement),
-            actions=[ft.TextButton("知道了", on_click=close_dlg)],
-        )
-        self.page.dialog = dlg
-        dlg.open = True
-        self.page.update()
-
-    def update_email_times(self):
-        for i, ctrl in enumerate(self.content.controls):
-            if hasattr(ctrl, 'data') and ctrl.data == 'email_card':
-                pass
-        # 简单方式：重新渲染列表（但会闪烁，这里只更新时间文字）
-        # 为了简单，每10秒重新渲染一次
-        if int(time.time()) % 10 == 0:
-            self.render_email_list()
-
-    # ────────── 弹窗 ──────────
-    def show_error(self, title, message):
-        dlg = ft.AlertDialog(
-            title=ft.Text(title),
-            content=ft.Text(message),
-            actions=[ft.TextButton("好的", on_click=lambda e: setattr(self.page.dialog, 'open', False))],
-        )
-        self.page.dialog = dlg
-        dlg.open = True
-        self.page.update()
+            self.page.run_thread(self.show_fullscreen_login)
+        threading.Thread(target=do_logout, daemon=True).start()
 
 
 def main(page: ft.Page):
-    TempMailApp(page)
+    app = TempMailApp(page)
+    app.main()
+
 
 if __name__ == "__main__":
     ft.app(target=main)
