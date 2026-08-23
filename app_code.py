@@ -467,26 +467,33 @@ class TempMailApp:
             return {}
 
     def after_loading(self):
-        # 先检查版本更新，版本号不一样就强制更新
-        remote_config = getattr(self, '_remote_config', {})
-        latest_version = remote_config.get("latest_version", "")
-        current_version = APP_CONFIG.get("app_version", "1.0.0")
-        
-        if latest_version and latest_version != current_version:
-            self._show_force_update(remote_config)
-            return
-        
-        # 进入主界面
-        if self.current_user:
-            self.build_main_ui()
-            self.render_email_list()
-        else:
-            self.show_fullscreen_login()
-        
-        # 显示公告（如果有）
-        announcement = remote_config.get("announcement", "")
-        if announcement:
-            self._show_announcement(announcement)
+        try:
+            # 先检查版本更新，版本号不一样就强制更新
+            remote_config = getattr(self, '_remote_config', {})
+            latest_version = remote_config.get("latest_version", "")
+            current_version = APP_CONFIG.get("app_version", "1.0.0")
+
+            if latest_version and latest_version != current_version:
+                self._show_force_update(remote_config)
+                return
+
+            # 进入主界面
+            if self.current_user:
+                self.build_main_ui()
+                self.render_email_list()
+            else:
+                self.show_fullscreen_login()
+
+            # 显示公告（如果有）
+            announcement = remote_config.get("announcement", "")
+            if announcement:
+                self._show_announcement(announcement)
+        except Exception as e:
+            # 如果出错，至少显示登录页，避免黑屏
+            try:
+                self.show_fullscreen_login()
+            except:
+                pass
 
     def _show_announcement(self, text):
         """显示公告弹窗"""
