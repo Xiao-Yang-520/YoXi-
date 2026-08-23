@@ -622,9 +622,15 @@ class TempMailApp:
                 return
             email = self.qq_email_map.get(qq)
             if not email:
-                error_text.value = "该QQ号未注册，请先注册"
+                # QQ号没有映射，提示用户可以用邮箱登录
+                error_text.value = "该QQ号未绑定账号，请用邮箱登录，或注册新账号"
                 success_text.value = ""
                 self.page.update()
+                # 切换到邮箱登录模式
+                def switch_to_email_login():
+                    time.sleep(1)
+                    self.page.run_thread(lambda: self._show_email_login_hint(error_text))
+                threading.Thread(target=switch_to_email_login, daemon=True).start()
                 return
             error_text.value = ""
             success_text.value = "登录中..."
@@ -788,7 +794,22 @@ class TempMailApp:
                         save_data(self.data)
                         self.page.run_thread(lambda: self._reg_success(error_text, success_text))
                 else:
-                    self.page.run_thread(lambda: self._show_error(data, error_text, success_text, "注册失败"))
+                    # 检查是否是用户已存在的错误
+                    error_msg = str(data) if isinstance(data, str) else json.dumps(data, ensure_ascii=False)
+                    if "already registered" in error_msg.lower() or "already exists" in error_msg.lower():
+                        # 用户已存在，直接用密码登录
+                        ok2, data2 = supabase_request("POST", "/auth/v1/token?grant_type=password",
+                            {"email": email, "password": password})
+                        if ok2 and data2.get("access_token"):
+                            self.qq_email_map[qq] = email
+                            self.data["qq_email_map"] = self.qq_email_map
+                            save_data(self.data)
+                            self._save_session(data2, qq)
+                            self.page.run_thread(lambda: self.go_to_main())
+                        else:
+                            self.page.run_thread(lambda: self._show_error("账号已注册，但密码错误，请用正确密码登录", error_text, success_text, "注册失败"))
+                    else:
+                        self.page.run_thread(lambda: self._show_error(data, error_text, success_text, "注册失败"))
             threading.Thread(target=reg_thread, daemon=True).start()
 
         def back(e):
