@@ -507,10 +507,13 @@ class TempMailApp:
             def join_qq_group(e):
                 if qq_group_url and qq_group_url != "https://qm.qq.com/qq-group-placeholder":
                     try:
-                        import webbrowser
-                        webbrowser.open(qq_group_url)
+                        self.page.launch_url(qq_group_url)
                     except:
-                        pass
+                        try:
+                            import webbrowser
+                            webbrowser.open(qq_group_url)
+                        except:
+                            pass
                 self._close_dialog()
             
             dialog = ft.AlertDialog(
@@ -546,10 +549,13 @@ class TempMailApp:
         def do_update(e):
             if update_url:
                 try:
-                    import webbrowser
-                    webbrowser.open(update_url)
+                    self.page.launch_url(update_url)
                 except:
-                    pass
+                    try:
+                        import webbrowser
+                        webbrowser.open(update_url)
+                    except:
+                        pass
         
         self.page.controls.clear()
         self.page.navigation_bar = None

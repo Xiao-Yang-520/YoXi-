@@ -1,4 +1,4 @@
-name: Build Android
+name: Build iOS
 
 on:
   push:
@@ -6,8 +6,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-android:
-    runs-on: ubuntu-latest
+  build-ios:
+    runs-on: macos-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -22,24 +22,16 @@ jobs:
           pip install --upgrade pip
           pip install flet==0.22.0
 
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
-
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.24.0'
           channel: 'stable'
 
-      - name: Setup Android SDK
+      - name: Setup CocoaPods
         run: |
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-          flutter doctor --android-licenses || true
-          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" || true
+          sudo gem install cocoapods
+          pod setup
 
       - name: Clean up extra directories before build
         run: |
@@ -47,13 +39,15 @@ jobs:
           ls -la
           echo "=== Removing kivy_app and flet_app ==="
           rm -rf kivy_app flet_app
+          echo "=== Removing data.json (avoid auto-login) ==="
+          rm -f data.json
           echo "=== Files after cleanup ==="
           ls -la
 
-      - name: Build Android APK
+      - name: Build iOS IPA
         run: |
-          echo "=== Building Android APK ==="
-          flet build --verbose apk 2>&1 | tee build_log.txt
+          echo "=== Building iOS IPA ==="
+          flet build --verbose ipa 2>&1 | tee build_log.txt
           BUILD_EXIT=${PIPESTATUS[0]}
           echo "=== Build exit code: $BUILD_EXIT ==="
           exit $BUILD_EXIT
@@ -64,25 +58,37 @@ jobs:
         if: always()
         run: |
           echo "=== build dir ==="
-          ls -laR build 2>/dev/null | head -100 || echo "No build dir"
-          echo "=== Find APK ==="
-          find . -name "*.apk" 2>/dev/null
-          echo "=== Build log last 150 lines ==="
-          tail -150 build_log.txt 2>/dev/null || echo "No log"
+          ls -laR build 2>/dev/null | head -150 || echo "No build dir"
+          echo "=== Find IPA ==="
+          find . -name "*.ipa" 2>/dev/null
+          echo "=== Find xcarchive ==="
+          find . -name "*.xcarchive" -type d 2>/dev/null
+          echo "=== Build log last 200 lines ==="
+          tail -200 build_log.txt 2>/dev/null || echo "No log"
 
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: android-build-log
+          name: ios-build-log
           path: build_log.txt
           if-no-files-found: ignore
 
-      - name: Upload APK
+      - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: YoXi-Email-Android
+          name: YoXi-Email-iOS
           path: |
-            **/*.apk
+            **/*.ipa
           if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload xcarchive
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: YoXi-Email-iOS-xcarchive
+          path: |
+            **/*.xcarchive
+          if-no-files-found: ignore
           retention-days: 30
