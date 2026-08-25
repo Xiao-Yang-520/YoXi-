@@ -50,7 +50,8 @@ jobs:
           echo "Product: YoXi邮箱"
           echo "Project: yoxi_email"
           echo "Org: com.yoxi"
-          flet build --verbose ipa --product "YoXi邮箱" --project "yoxi_email" --org "com.yoxi" 2>&1 | tee build_log.txt
+          echo "Template: ./flet-template (with 3D email icon)"
+          flet build --verbose ipa --product "YoXi邮箱" --project "yoxi_email" --org "com.yoxi" --template "./flet-template" 2>&1 | tee build_log.txt
           BUILD_EXIT=${PIPESTATUS[0]}
           echo "=== Build exit code: $BUILD_EXIT ==="
           exit $BUILD_EXIT
