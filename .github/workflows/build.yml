@@ -58,31 +58,54 @@ jobs:
         env:
           FLUTTER_SUPPRESS_ANALYTICS: "true"
 
-      - name: Check build output
+      - name: Find and copy IPA
         if: always()
         run: |
-          echo "=== build dir ==="
-          ls -laR build 2>/dev/null | head -150 || echo "No build dir"
-          echo "=== Find IPA ==="
-          find . -name "*.ipa" 2>/dev/null
-          echo "=== Find xcarchive ==="
-          find . -name "*.xcarchive" -type d 2>/dev/null
-          echo "=== Build log last 200 lines ==="
-          tail -200 build_log.txt 2>/dev/null || echo "No log"
+          echo "=== Searching for IPA files ==="
+          find . -name "*.ipa" -type f 2>/dev/null | tee ipa_files.txt
+          
+          echo ""
+          echo "=== Searching for xcarchive ==="
+          find . -name "*.xcarchive" -type d 2>/dev/null | tee xcarchive_files.txt
+          
+          echo ""
+          echo "=== build directory structure ==="
+          ls -laR build 2>/dev/null | head -200 || echo "No build dir"
+          
+          echo ""
+          echo "=== Copy IPA to output dir ==="
+          mkdir -p output
+          if [ -s ipa_files.txt ]; then
+            while IFS= read -r ipa; do
+              echo "Copying: $ipa"
+              cp "$ipa" output/
+            done < ipa_files.txt
+          else
+            echo "No IPA files found!"
+          fi
+          
+          echo ""
+          echo "=== Output dir ==="
+          ls -la output/
 
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ios-build-log
-          path: build_log.txt
+          path: |
+            build_log.txt
+            ipa_files.txt
+            xcarchive_files.txt
           if-no-files-found: ignore
 
       - name: Upload IPA
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: YoXi-Email-iOS
+          name: YoXi-Email-iOS-IPA
           path: |
+            output/*.ipa
             **/*.ipa
           if-no-files-found: warn
           retention-days: 30
