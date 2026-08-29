@@ -1,7 +1,8 @@
 {
   "app_name": "YoXi邮箱",
   "app_version": "1.0.0",
-  "remote_config_url": "https://gitee.com/yao-xis-520/yo-xi-email-address/raw/master/remote_config.json",
+  "remote_api_base": "https://o1415520.pythonanywhere.com",
+  "remote_app_key": "85e27f37695041bc83f9e8cc1b322567ac336c22bc004513",
   "email_lifetime_seconds": 3600,
   "auto_refresh_seconds": 3,
   "window_width": 375,
