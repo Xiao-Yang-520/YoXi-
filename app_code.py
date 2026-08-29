@@ -84,6 +84,72 @@ for k, v in DEFAULT_CONFIG.items():
 THEME_COLOR = APP_CONFIG.get("theme_color", "#007AFF")
 DATA_PATH = os.path.join(_base_dir, "data.json")
 
+# ========== 统一设计系统 ==========
+# 圆角
+RADIUS_SM = 8
+RADIUS_MD = 12
+RADIUS_LG = 16
+RADIUS_XL = 24
+RADIUS_PILL = 999
+
+# 间距
+SPACE_XS = 4
+SPACE_SM = 8
+SPACE_MD = 12
+SPACE_LG = 16
+SPACE_XL = 24
+SPACE_2XL = 32
+
+# 字体大小
+FONT_XS = 10
+FONT_SM = 12
+FONT_MD = 14
+FONT_LG = 16
+FONT_XL = 18
+FONT_2XL = 22
+FONT_3XL = 28
+
+# 字重
+FONT_REGULAR = ft.FontWeight.NORMAL
+FONT_MEDIUM = ft.FontWeight.W_500
+FONT_SEMIBOLD = ft.FontWeight.W_600
+FONT_BOLD = ft.FontWeight.BOLD
+
+# 辅助色
+COLOR_SUCCESS = "#34C759"
+COLOR_WARNING = "#FF9500"
+COLOR_DANGER = "#FF3B30"
+COLOR_INFO = "#5AC8FA"
+COLOR_PURPLE = "#AF52DE"
+COLOR_PINK = "#FF2D55"
+COLOR_TEAL = "#30B0C7"
+COLOR_INDIGO = "#5856D6"
+
+# 浅色主题色阶
+LIGHT_BG = "#F2F2F7"
+LIGHT_CARD = "#FFFFFF"
+LIGHT_HEADER = "#F9F9FB"
+LIGHT_TEXT = "#1C1C1E"
+LIGHT_TEXT2 = "#8E8E93"
+LIGHT_TEXT3 = "#C7C7CC"
+LIGHT_BORDER = "#E5E5EA"
+LIGHT_INPUT = "#F2F2F7"
+
+# 深色主题色阶
+DARK_BG = "#000000"
+DARK_CARD = "#1C1C1E"
+DARK_HEADER = "#2C2C2E"
+DARK_TEXT = "#FFFFFF"
+DARK_TEXT2 = "#8E8E93"
+DARK_TEXT3 = "#636366"
+DARK_BORDER = "#38383A"
+DARK_INPUT = "#2C2C2E"
+
+# 动画时长
+ANIM_FAST = 150
+ANIM_NORMAL = 250
+ANIM_SLOW = 400
+
 
 def load_data():
     try:
@@ -405,68 +471,6 @@ def temp_mail_io_read_message(email, msg_id):
         return False, str(e)
 
 
-# ========== 免费短信接收爬虫 (free-sms-receive.com) ==========
-def sms_fetch_page(url, timeout=30):
-    """获取网页内容"""
-    req = urllib.request.Request(url, headers={
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "text/html",
-    })
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read().decode("utf-8")
-
-
-def sms_parse_numbers(html_content):
-    """解析号码列表"""
-    numbers = []
-    # 直接提取号码、国家、链接
-    nums = re.findall(r'<h4 class="number-boxes-item-number">([^<]+)</h4>', html_content)
-    countries = re.findall(r'<h5 class="number-boxes-item-country">([^<]+)</h5>', html_content)
-    links = re.findall(r'href="(/message/\d+\.html)"', html_content)
-    
-    for i in range(min(len(nums), len(links))):
-        number = html.unescape(nums[i].strip())
-        country = html.unescape(countries[i].strip()) if i < len(countries) else ""
-        # 去除国家中的换行和多余空格
-        country = " ".join(country.split())
-        link = "https://www.free-sms-receive.com" + links[i]
-        
-        if number and link:
-            numbers.append({
-                "number": number,
-                "country": country,
-                "url": link,
-            })
-    
-    return numbers
-
-
-def sms_parse_messages(html_content):
-    """解析短信列表"""
-    messages = []
-    # 直接提取发件人、时间、内容
-    senders = re.findall(r'<div class="mobile_hide">([^<]+)</div>', html_content)
-    times = re.findall(r'<div class="col-xs-0 col-md-2">([^<]+)</div>', html_content)
-    contents = re.findall(r'<div class="col-xs-12 col-md-8"[^>]*>(.*?)</div>', html_content, re.DOTALL)
-    
-    for i in range(len(senders)):
-        sender = html.unescape(senders[i].strip())
-        time = html.unescape(times[i].strip()) if i < len(times) else ""
-        msg_content = ""
-        if i < len(contents):
-            msg_content = html.unescape(contents[i].strip())
-            msg_content = re.sub(r'<[^>]+>', '', msg_content)
-        
-        if sender or msg_content:
-            messages.append({
-                "sender": sender,
-                "time": time,
-                "content": msg_content,
-            })
-    
-    return messages
-
-
 class TempMailApp:
     def __init__(self, page):
         self.page = page
@@ -478,14 +482,15 @@ class TempMailApp:
         self._pending_update = None
         self._msg_counts = {}
         self.settings = load_settings()
-        # 动态主题颜色（根据白天/夜间切换）
-        self.clr_bg = ft.colors.GREY_100
-        self.clr_card = ft.colors.WHITE
-        self.clr_header_bg = ft.colors.GREY_50
-        self.clr_text = ft.colors.BLACK
-        self.clr_text2 = ft.colors.GREY_500
-        self.clr_border = ft.colors.GREY_200
-        self.clr_input_bg = ft.colors.GREY_100
+        # 动态主题颜色（iOS风格现代配色）
+        self.clr_bg = LIGHT_BG
+        self.clr_card = LIGHT_CARD
+        self.clr_header_bg = LIGHT_HEADER
+        self.clr_text = LIGHT_TEXT
+        self.clr_text2 = LIGHT_TEXT2
+        self.clr_text3 = LIGHT_TEXT3
+        self.clr_border = LIGHT_BORDER
+        self.clr_input_bg = LIGHT_INPUT
 
     def format_user_id(self, raw_id):
         """格式化用户ID：原始ID=1显示为930001，以此类推"""
@@ -500,100 +505,239 @@ class TempMailApp:
         try:
             self.page.window_width = APP_CONFIG.get("window_width", 375)
             self.page.window_height = APP_CONFIG.get("window_height", 812)
-        except:
-            pass
+        except Exception as e:
+            print(f"[窗口尺寸] 设置失败: {e}")
+        # 设置窗口标题栏和任务栏图标（Windows API方式，确保任务栏也生效）
+        try:
+            ico_path = os.path.join(_base_dir, "assets", "app_icon.ico")
+            if os.path.exists(ico_path):
+                self.page.window_icon = ico_path
+                print(f"[窗口图标] Flet属性已设置: {ico_path}")
+                # 用Windows API设置任务栏图标（延迟到窗口创建后）
+                import threading
+                threading.Thread(target=self._set_win_taskbar_icon, args=(ico_path,), daemon=True).start()
+            else:
+                print(f"[窗口图标] 文件不存在: {ico_path}")
+        except Exception as e:
+            print(f"[窗口图标] 设置失败: {e}")
         self.page.theme_mode = ft.ThemeMode.SYSTEM
         self._apply_theme_mode()
         self.show_loading()
 
+    def _set_win_taskbar_icon(self, ico_path):
+        """用Windows API设置窗口任务栏图标（轮询方式，窗口一创建好就立即设置）"""
+        try:
+            import time
+            import ctypes
+            from ctypes import wintypes
+            user32 = ctypes.windll.user32
+            win_title = APP_CONFIG.get("app_name", "YoXi邮箱")
+            # 轮询查找窗口句柄（最多等5秒，每100ms查一次）
+            hwnd = 0
+            for _ in range(50):
+                hwnd = user32.FindWindowW(None, win_title)
+                if hwnd:
+                    break
+                time.sleep(0.1)
+            if not hwnd:
+                print(f"[任务栏图标] 未找到窗口: {win_title}")
+                return
+            # 加载ICO文件为HICON
+            IMAGE_ICON = 1
+            LR_LOADFROMFILE = 0x00000010
+            hicon_big = user32.LoadImageW(None, ico_path, IMAGE_ICON, 256, 256, LR_LOADFROMFILE)
+            hicon_small = user32.LoadImageW(None, ico_path, IMAGE_ICON, 32, 32, LR_LOADFROMFILE)
+            WM_SETICON = 0x0080
+            ICON_BIG = 1
+            ICON_SMALL = 0
+            if hicon_big:
+                user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, hicon_big)
+            if hicon_small:
+                user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, hicon_small)
+            # 刷新任务栏
+            user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0020 | 0x0001 | 0x0002 | 0x0040)
+            print(f"[任务栏图标] Windows API设置成功, hwnd={hwnd}")
+        except Exception as e:
+            print(f"[任务栏图标] 设置失败: {e}")
+
     # ========== 加载页 ==========
     def show_loading(self):
+        """加载页（整体化设计：背景图铺满 + 毛玻璃卡片 + 呼吸动画 + 进度条）"""
         self.page.controls.clear()
         self.page.navigation_bar = None
         self.page.padding = 0
         self.page.spacing = 0
-        self.page.bgcolor = ft.colors.WHITE
+        self.page.bgcolor = ft.colors.BLACK
         self._skipped = False
-        self.progress = ft.ProgressBar(width=280, value=0, color=THEME_COLOR,
-            bgcolor=ft.colors.GREY_200)
-        self.status_text = ft.Text("正在加载...", size=13, color=ft.colors.GREY_500)
-        # 右上角跳过按钮
-        self._skip_text = ft.Text("跳过 5s", size=13, color=ft.colors.GREY_700)
+        self._breathing_running = True
+
+        # 判断当前主题（用于文字颜色适配）
+        mode = self.settings.get("theme_mode", "system")
+        is_dark = mode == "dark"
+        text_on_bg = ft.colors.WHITE  # 背景图上统一用白色
+        text_glass = ft.colors.WHITE if is_dark else ft.colors.BLACK
+        glass_bg = ft.colors.with_opacity(0.25, ft.colors.BLACK if is_dark else ft.colors.WHITE)
+
+        # 进度条和状态文字（修复：之前创建了但没显示）
+        self.progress = ft.ProgressBar(
+            width=260, value=0, color=THEME_COLOR,
+            bgcolor=ft.colors.with_opacity(0.3, ft.colors.WHITE),
+            border_radius=4,
+        )
+        self.status_text = ft.Text("正在加载...", size=12, color=text_on_bg, weight=FONT_MEDIUM)
+
+        # 右上角跳过按钮（毛玻璃半透明 + 胶囊 + 阴影）
+        self._skip_text = ft.Text("跳过 5s", size=13, color=text_on_bg, weight=FONT_MEDIUM)
         skip_btn = ft.GestureDetector(
             content=ft.Container(
-                content=ft.Row([self._skip_text,
-                    ft.Icon(ft.icons.ARROW_FORWARD_IOS, size=13, color=ft.colors.GREY_700)], spacing=2),
-                bgcolor=ft.colors.WHITE,
-                border_radius=24,
-                border=ft.border.all(1, "#e8e8ee"),
+                content=ft.Row([
+                    self._skip_text,
+                    ft.Icon(ft.icons.ARROW_FORWARD_IOS, size=12, color=text_on_bg),
+                ], spacing=3),
+                bgcolor=ft.colors.with_opacity(0.3, ft.colors.BLACK),
+                border_radius=RADIUS_PILL,
                 padding=ft.padding.symmetric(horizontal=16, vertical=8),
+                shadow=ft.BoxShadow(
+                    spread_radius=0, blur_radius=10,
+                    color=ft.colors.with_opacity(0.3, ft.colors.BLACK),
+                    offset=ft.Offset(0, 2),
+                ),
             ),
             on_tap=self._skip_loading,
         )
-        # 应用图标（默认隐藏，使用本地背景图）
-        app_icon_widget = self._build_app_icon_widget(size=72)
-        self._splash_icon = ft.Container(
-            content=app_icon_widget,
-            alignment=ft.alignment.center,
-            visible=False,  # 隐藏，直接显示背景图
-        )
-        # 本地背景图路径
-        local_bg_path = os.path.join(_base_dir, "assets", "app_background.jpg")
-        # 上面：背景图区域（右上角跳过按钮 + 本地背景图）
-        self._splash_bg_area = ft.Container(
-            content=ft.Column([
-                ft.Row([skip_btn], alignment=ft.MainAxisAlignment.END),
-                ft.Container(expand=True),
-                ft.Row([self._splash_icon], alignment=ft.MainAxisAlignment.CENTER),
-                ft.Container(expand=True),
-            ], spacing=0, expand=True),
-            expand=True,
-            image_src=local_bg_path,  # 直接使用本地背景图
-            image_fit=ft.ImageFit.COVER,  # 铺满整个区域
-            padding=ft.padding.only(top=50, right=16, left=16),
-        )
-        # 下面：白色区域 + 应用信息（左边图标，右边名字+版本号）
+
+        # 中心应用图标（带呼吸动画容器）
         app_name = APP_CONFIG.get("app_name", "YoXi邮箱")
         app_version = APP_CONFIG.get("app_version", "1.0.0")
-        # 使用用户选择的应用图标（默认是第一个默认图标，用户修改后会随着修改）
-        app_icon_widget = self._build_app_icon_widget(size=48)
-        bottom_area = ft.Container(
-            content=ft.Row([
-                # 左边：应用图标（用户选择的图标，随着用户修改而修改）
-                ft.Container(
-                    content=app_icon_widget,
-                    width=56, height=56,
-                    bgcolor=ft.colors.WHITE,
-                    border_radius=14,
-                    alignment=ft.alignment.center,
-                ),
-                ft.Container(width=3),
-                # 右边：应用名字 + 版本号
-                ft.Column([
-                    ft.Text(app_name, size=18, weight=ft.FontWeight.BOLD, color=ft.colors.BLACK),
-                    ft.Container(height=2),
-                    ft.Text(f"版本 {app_version}", size=12, color=ft.colors.GREY_500),
-                ], spacing=0, alignment=ft.MainAxisAlignment.CENTER),
-            ], alignment=ft.MainAxisAlignment.CENTER, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            bgcolor=ft.colors.WHITE,
-            padding=ft.padding.only(bottom=24, top=18, left=24, right=24),
+        center_icon_widget = self._build_app_icon_widget(size=72)
+        self._splash_icon = ft.Container(
+            content=center_icon_widget,
+            width=96, height=96,
+            bgcolor=ft.colors.with_opacity(0.25, ft.colors.WHITE),
+            border_radius=24,
+            alignment=ft.alignment.center,
+            shadow=ft.BoxShadow(
+                spread_radius=0, blur_radius=20,
+                color=ft.colors.with_opacity(0.4, ft.colors.BLACK),
+                offset=ft.Offset(0, 6),
+            ),
         )
-        loading_page = ft.Column([
-            self._splash_bg_area,
-            ft.Container(height=1, bgcolor=ft.colors.GREY_300),  # 分割线
-            bottom_area,
-        ], spacing=0, expand=True)
-        # 白色背景占满全屏，避免露出后面的黑色主页
-        full_page = ft.Container(content=loading_page, bgcolor=ft.colors.WHITE, expand=True)
+
+        # 本地背景图路径
+        local_bg_path = os.path.join(_base_dir, "assets", "app_background.jpg")
+
+        # 底部毛玻璃卡片（进度条 + 状态文字 + 应用信息）
+        # 图标用COVER填满，去掉透明边距，看起来更大
+        _bottom_icon_path = self._get_current_app_icon()
+        bottom_icon_widget = ft.Image(
+            src=_bottom_icon_path, width=56, height=56,
+            fit=ft.ImageFit.COVER,
+        )
+        bottom_card = ft.Container(
+            content=ft.Column([
+                # 进度条
+                self.progress,
+                ft.Container(height=8),
+                # 状态文字
+                self.status_text,
+                ft.Container(height=14),
+                # 分割线
+                ft.Container(height=1, bgcolor=ft.colors.with_opacity(0.2, ft.colors.WHITE)),
+                ft.Container(height=12),
+                # 应用信息（图标放大，去掉右侧slogan）
+                ft.Row([
+                    ft.Container(
+                        content=bottom_icon_widget,
+                        width=56, height=56,
+                        bgcolor=ft.colors.with_opacity(0.3, ft.colors.WHITE),
+                        border_radius=16,
+                        alignment=ft.alignment.center,
+                        clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+                    ),
+                    ft.Container(width=14),
+                    ft.Column([
+                        ft.Text(app_name, size=17, weight=FONT_BOLD, color=text_on_bg),
+                        ft.Container(height=2),
+                        ft.Text(f"版本 {app_version}", size=12, color=ft.colors.with_opacity(0.7, text_on_bg)),
+                    ], spacing=0, alignment=ft.MainAxisAlignment.CENTER),
+                ], alignment=ft.MainAxisAlignment.CENTER, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+            bgcolor=ft.colors.with_opacity(0.2, ft.colors.BLACK),
+            border_radius=RADIUS_XL,
+            padding=ft.padding.only(top=20, bottom=20, left=22, right=22),
+            margin=ft.margin.only(left=20, right=20, bottom=24),
+            shadow=ft.BoxShadow(
+                spread_radius=0, blur_radius=25,
+                color=ft.colors.with_opacity(0.4, ft.colors.BLACK),
+                offset=ft.Offset(0, -4),
+            ),
+        )
+
+        # 整体布局：背景图铺满 + 右上角跳过 + 底部毛玻璃卡片
+        full_page = ft.Container(
+            content=ft.Stack([
+                # 背景图（铺满全屏）
+                ft.Container(
+                    expand=True,
+                    image_src=local_bg_path,
+                    image_fit=ft.ImageFit.COVER,
+                ),
+                # 黑色半透明遮罩（增强文字可读性）
+                ft.Container(
+                    expand=True,
+                    bgcolor=ft.colors.with_opacity(0.35, ft.colors.BLACK),
+                ),
+                # 内容层（背景图干净，只保留顶部跳过和底部卡片）
+                ft.Column([
+                    # 顶部：跳过按钮
+                    ft.Container(
+                        content=ft.Row([skip_btn], alignment=ft.MainAxisAlignment.END),
+                        padding=ft.padding.only(top=50, right=16),
+                    ),
+                    ft.Container(expand=True),
+                    # 底部：毛玻璃卡片
+                    bottom_card,
+                ], spacing=0, expand=True),
+            ]),
+            expand=True,
+            bgcolor=ft.colors.BLACK,
+        )
+
         self.page.navigation_bar = None
         self.page.add(full_page)
         self.page.update()
+
+        # 启动呼吸动画
+        threading.Thread(target=self._breathing_animation, daemon=True).start()
         # 跳过倒计时
         threading.Thread(target=self._skip_countdown, daemon=True).start()
-        # 第一步：立即获取远程配置和背景图（不等待其他加载步骤）
+        # 立即获取远程配置
         threading.Thread(target=self._fetch_remote_config_and_bg, daemon=True).start()
         # 加载线程
         threading.Thread(target=self.load_thread, daemon=True).start()
+
+    def _breathing_animation(self):
+        """中心图标呼吸缩放动画"""
+        try:
+            import time
+            scale = 1.0
+            direction = 1
+            while getattr(self, '_breathing_running', False):
+                try:
+                    scale += 0.008 * direction
+                    if scale >= 1.08:
+                        direction = -1
+                    elif scale <= 0.95:
+                        direction = 1
+                    # 通过调整padding实现缩放效果（Flet Container不支持直接scale）
+                    pad = int((1 - scale) * 8)
+                    self._splash_icon.padding = ft.padding.all(max(0, pad))
+                    self.page.update()
+                except:
+                    pass
+                time.sleep(0.05)
+        except:
+            pass
     
     def _fetch_remote_config_and_bg(self):
         """立即获取远程配置（使用本地背景图，不再更新背景图）"""
@@ -1536,31 +1680,93 @@ class TempMailApp:
             on_click=go_register,
         )
 
-        self.content.controls.append(ft.Container(height=60))
+        # ===== 美化后的登录页 =====
+        app_name = APP_CONFIG.get("app_name", "YoXi邮箱")
+        _login_icon_path = self._get_current_app_icon()
+        # 顶部品牌区：应用图标 + 名字 + slogan
+        self.content.controls.append(ft.Container(height=70))
         self.content.controls.append(ft.Row([
-            ft.Container(content=ft.Icon(ft.icons.LOCK_OUTLINE, size=48, color=THEME_COLOR),
-                width=90, height=90, bgcolor=ft.colors.BLUE_50,
-                border_radius=45, alignment=ft.alignment.center),
+            ft.Container(
+                content=ft.Image(src=_login_icon_path, width=64, height=64, fit=ft.ImageFit.COVER),
+                width=76, height=76,
+                bgcolor=ft.colors.with_opacity(0.08, THEME_COLOR),
+                border_radius=20,
+                alignment=ft.alignment.center,
+                clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+                shadow=ft.BoxShadow(
+                    spread_radius=0, blur_radius=20,
+                    color=ft.colors.with_opacity(0.25, THEME_COLOR),
+                    offset=ft.Offset(0, 6),
+                ),
+            ),
         ], alignment=ft.MainAxisAlignment.CENTER))
-        self.content.controls.append(ft.Container(height=20))
-        self.content.controls.append(ft.Row([ft.Text("欢迎回来", size=24, weight=ft.FontWeight.BOLD)], alignment=ft.MainAxisAlignment.CENTER))
-        self.content.controls.append(ft.Container(height=8))
-        self.content.controls.append(ft.Row([ft.Text("用QQ号和密码登录", size=14, color=ft.colors.GREY_500)], alignment=ft.MainAxisAlignment.CENTER))
-        self.content.controls.append(ft.Container(height=30))
-        self.content.controls.append(ft.Container(content=qq_field, padding=ft.padding.symmetric(horizontal=24)))
-        self.content.controls.append(ft.Container(height=12))
-        self.content.controls.append(ft.Container(content=password_field, padding=ft.padding.symmetric(horizontal=24)))
-        self.content.controls.append(ft.Container(height=12))
-        self.content.controls.append(captcha_container)
-        self.content.controls.append(ft.Container(height=8))
-        self.content.controls.append(ft.Container(content=error_text, padding=ft.padding.symmetric(horizontal=24)))
-        self.content.controls.append(ft.Container(content=success_text, padding=ft.padding.symmetric(horizontal=24)))
         self.content.controls.append(ft.Container(height=16))
+        self.content.controls.append(ft.Row([
+            ft.Text(app_name, size=26, weight=ft.FontWeight.BOLD, color=ft.colors.BLACK),
+        ], alignment=ft.MainAxisAlignment.CENTER))
+        self.content.controls.append(ft.Container(height=6))
+        self.content.controls.append(ft.Row([
+            ft.Text("临时邮箱，触手可及", size=14, color=ft.colors.GREY_500),
+        ], alignment=ft.MainAxisAlignment.CENTER))
+        self.content.controls.append(ft.Container(height=36))
+
+        # 输入卡片（白色圆角卡片 + 阴影）
+        input_card = ft.Container(
+            content=ft.Column([
+                ft.Container(content=qq_field, padding=ft.padding.symmetric(horizontal=4)),
+                ft.Container(height=12),
+                ft.Container(content=password_field, padding=ft.padding.symmetric(horizontal=4)),
+                ft.Container(height=14),
+                # 滑动验证（嵌入卡片内）
+                ft.Row([slider_detector], alignment=ft.MainAxisAlignment.CENTER),
+                ft.Container(height=4),
+                ft.Container(content=error_text, padding=ft.padding.symmetric(horizontal=4)),
+                ft.Container(content=success_text, padding=ft.padding.symmetric(horizontal=4)),
+            ], spacing=0),
+            bgcolor=ft.colors.WHITE,
+            border_radius=18,
+            padding=ft.padding.all(18),
+            margin=ft.margin.symmetric(horizontal=24),
+            shadow=ft.BoxShadow(
+                spread_radius=0, blur_radius=24,
+                color=ft.colors.with_opacity(0.10, ft.colors.BLACK),
+                offset=ft.Offset(0, 4),
+            ),
+        )
+        self.content.controls.append(input_card)
+        self.content.controls.append(ft.Container(height=28))
+
+        # 登录按钮（渐变 + 阴影 + 圆角）
+        _login_gradient_btn = ft.GestureDetector(
+            content=ft.Container(
+                content=ft.Row([
+                    ft.Text("登录", size=17, weight=ft.FontWeight.BOLD, color=ft.colors.WHITE),
+                ], alignment=ft.MainAxisAlignment.CENTER),
+                height=52,
+                bgcolor=THEME_COLOR,
+                border_radius=16,
+                alignment=ft.alignment.center,
+                shadow=ft.BoxShadow(
+                    spread_radius=0, blur_radius=16,
+                    color=ft.colors.with_opacity(0.35, THEME_COLOR),
+                    offset=ft.Offset(0, 4),
+                ),
+            ),
+            on_tap=do_login,
+        )
         self.content.controls.append(ft.Container(
-            content=ft.Row([login_btn, register_btn], spacing=12),
+            content=_login_gradient_btn,
             padding=ft.padding.symmetric(horizontal=24),
         ))
         self.content.controls.append(ft.Container(height=16))
+
+        # 注册入口（文字链接）
+        self.content.controls.append(ft.Row([
+            ft.Text("还没有账号？", size=14, color=ft.colors.GREY_500),
+            ft.TextButton("立即注册", style=ft.ButtonStyle(color=THEME_COLOR),
+                on_click=go_register),
+        ], alignment=ft.MainAxisAlignment.CENTER, spacing=2))
+        self.content.controls.append(ft.Container(height=24))
         self.page.update()
 
     # ========== 注册页（用户名+QQ号+邮箱+数字验证码+密码）==========
@@ -1683,30 +1889,96 @@ class TempMailApp:
         reg_btn = ft.ElevatedButton("注册", expand=True, height=50,
             style=ft.ButtonStyle(bgcolor=THEME_COLOR, color=ft.colors.WHITE), on_click=do_register)
 
+        # ===== 美化后的注册页 =====
+        app_name = APP_CONFIG.get("app_name", "YoXi邮箱")
+        _reg_icon_path = self._get_current_app_icon()
+        # 顶部品牌区
         self.content.controls.append(ft.Container(height=50))
-        self.content.controls.append(ft.Row([ft.Text("注册账号", size=24, weight=ft.FontWeight.BOLD)], alignment=ft.MainAxisAlignment.CENTER))
-        self.content.controls.append(ft.Container(height=25))
-        self.content.controls.append(ft.Container(content=username_field, padding=ft.padding.symmetric(horizontal=24)))
-        self.content.controls.append(ft.Container(height=12))
-        self.content.controls.append(ft.Container(content=qq_field, padding=ft.padding.symmetric(horizontal=24)))
-        self.content.controls.append(ft.Container(height=12))
-        self.content.controls.append(ft.Container(content=email_field, padding=ft.padding.symmetric(horizontal=24)))
-        self.content.controls.append(ft.Container(height=12))
+        self.content.controls.append(ft.Row([
+            ft.Container(
+                content=ft.Image(src=_reg_icon_path, width=52, height=52, fit=ft.ImageFit.COVER),
+                width=64, height=64,
+                bgcolor=ft.colors.with_opacity(0.08, THEME_COLOR),
+                border_radius=18,
+                alignment=ft.alignment.center,
+                clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+                shadow=ft.BoxShadow(
+                    spread_radius=0, blur_radius=16,
+                    color=ft.colors.with_opacity(0.25, THEME_COLOR),
+                    offset=ft.Offset(0, 4),
+                ),
+            ),
+        ], alignment=ft.MainAxisAlignment.CENTER))
+        self.content.controls.append(ft.Container(height=14))
+        self.content.controls.append(ft.Row([
+            ft.Text("注册账号", size=24, weight=ft.FontWeight.BOLD, color=ft.colors.BLACK),
+        ], alignment=ft.MainAxisAlignment.CENTER))
+        self.content.controls.append(ft.Container(height=4))
+        self.content.controls.append(ft.Row([
+            ft.Text(f"加入{app_name}，开启临时邮箱之旅", size=13, color=ft.colors.GREY_500),
+        ], alignment=ft.MainAxisAlignment.CENTER))
+        self.content.controls.append(ft.Container(height=24))
+
+        # 输入卡片
+        reg_input_card = ft.Container(
+            content=ft.Column([
+                ft.Container(content=username_field, padding=ft.padding.symmetric(horizontal=4)),
+                ft.Container(height=10),
+                ft.Container(content=qq_field, padding=ft.padding.symmetric(horizontal=4)),
+                ft.Container(height=10),
+                ft.Container(content=email_field, padding=ft.padding.symmetric(horizontal=4)),
+                ft.Container(height=10),
+                ft.Row([code_field, send_btn], alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ft.Container(height=10),
+                ft.Container(content=password_field, padding=ft.padding.symmetric(horizontal=4)),
+                ft.Container(height=10),
+                ft.Container(content=confirm_field, padding=ft.padding.symmetric(horizontal=4)),
+                ft.Container(height=6),
+                ft.Container(content=error_text, padding=ft.padding.symmetric(horizontal=4)),
+                ft.Container(content=success_text, padding=ft.padding.symmetric(horizontal=4)),
+            ], spacing=0),
+            bgcolor=ft.colors.WHITE,
+            border_radius=18,
+            padding=ft.padding.all(16),
+            margin=ft.margin.symmetric(horizontal=24),
+            shadow=ft.BoxShadow(
+                spread_radius=0, blur_radius=24,
+                color=ft.colors.with_opacity(0.10, ft.colors.BLACK),
+                offset=ft.Offset(0, 4),
+            ),
+        )
+        self.content.controls.append(reg_input_card)
+        self.content.controls.append(ft.Container(height=24))
+
+        # 注册按钮
+        _reg_gradient_btn = ft.GestureDetector(
+            content=ft.Container(
+                content=ft.Row([
+                    ft.Text("注册", size=17, weight=ft.FontWeight.BOLD, color=ft.colors.WHITE),
+                ], alignment=ft.MainAxisAlignment.CENTER),
+                height=52,
+                bgcolor=THEME_COLOR,
+                border_radius=16,
+                alignment=ft.alignment.center,
+                shadow=ft.BoxShadow(
+                    spread_radius=0, blur_radius=16,
+                    color=ft.colors.with_opacity(0.35, THEME_COLOR),
+                    offset=ft.Offset(0, 4),
+                ),
+            ),
+            on_tap=do_register,
+        )
         self.content.controls.append(ft.Container(
-            content=ft.Row([code_field, send_btn], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            content=_reg_gradient_btn,
             padding=ft.padding.symmetric(horizontal=24),
         ))
-        self.content.controls.append(ft.Container(height=12))
-        self.content.controls.append(ft.Container(content=password_field, padding=ft.padding.symmetric(horizontal=24)))
-        self.content.controls.append(ft.Container(height=12))
-        self.content.controls.append(ft.Container(content=confirm_field, padding=ft.padding.symmetric(horizontal=24)))
-        self.content.controls.append(ft.Container(height=8))
-        self.content.controls.append(ft.Container(content=error_text, padding=ft.padding.symmetric(horizontal=24)))
-        self.content.controls.append(ft.Container(content=success_text, padding=ft.padding.symmetric(horizontal=24)))
-        self.content.controls.append(ft.Container(height=16))
-        self.content.controls.append(ft.Container(content=reg_btn, padding=ft.padding.symmetric(horizontal=24)))
-        self.content.controls.append(ft.Container(height=16))
-        self.content.controls.append(ft.Row([ft.TextButton("已有账号？返回登录", on_click=back)], alignment=ft.MainAxisAlignment.CENTER))
+        self.content.controls.append(ft.Container(height=14))
+        self.content.controls.append(ft.Row([
+            ft.Text("已有账号？", size=14, color=ft.colors.GREY_500),
+            ft.TextButton("返回登录", style=ft.ButtonStyle(color=THEME_COLOR), on_click=back),
+        ], alignment=ft.MainAxisAlignment.CENTER, spacing=2))
+        self.content.controls.append(ft.Container(height=24))
         self.page.update()
 
     def _code_sent(self, send_btn, countdown, success_text):
@@ -2165,38 +2437,43 @@ class TempMailApp:
                 content=ft.Column([
                     # 第一行：标签行（邮箱类型 + 邮件数量 + ID）
                     ft.Row([
-                        ft.Container(content=ft.Text(type_name, size=10, color=ft.colors.WHITE),
-                            bgcolor=ft.colors.GREEN if is_real else ft.colors.ORANGE,
-                            border_radius=6, padding=ft.padding.symmetric(horizontal=8, vertical=4),
-                            height=22, alignment=ft.alignment.center),
+                        ft.Container(content=ft.Text(type_name, size=FONT_XS, color=ft.colors.WHITE, weight=FONT_MEDIUM),
+                            bgcolor=COLOR_SUCCESS if is_real else COLOR_WARNING,
+                            border_radius=RADIUS_PILL, padding=ft.padding.symmetric(horizontal=10, vertical=5),
+                            alignment=ft.alignment.center),
                         ft.Container(width=6),
-                        ft.Container(content=ft.Text("Gmail收信" if msg_count == -1 else f"{msg_count}封邮件", size=10, color=ft.colors.WHITE),
-                            bgcolor=ft.colors.ORANGE if msg_count == -1 else THEME_COLOR,
-                            border_radius=6, padding=ft.padding.symmetric(horizontal=8, vertical=4),
-                            height=22, alignment=ft.alignment.center),
+                        ft.Container(content=ft.Text("Gmail收信" if msg_count == -1 else f"{msg_count}封邮件", size=FONT_XS, color=ft.colors.WHITE, weight=FONT_MEDIUM),
+                            bgcolor=COLOR_WARNING if msg_count == -1 else THEME_COLOR,
+                            border_radius=RADIUS_PILL, padding=ft.padding.symmetric(horizontal=10, vertical=5),
+                            alignment=ft.alignment.center),
                         ft.Container(width=6),
-                        ft.Container(content=ft.Text(id_display, size=10, color=ft.colors.WHITE),
-                            bgcolor=ft.colors.GREY_600,
-                            border_radius=6, padding=ft.padding.symmetric(horizontal=8, vertical=4),
-                            height=22, alignment=ft.alignment.center),
+                        ft.Container(content=ft.Text(id_display, size=FONT_XS, color=ft.colors.WHITE, weight=FONT_MEDIUM),
+                            bgcolor=self.clr_text2,
+                            border_radius=RADIUS_PILL, padding=ft.padding.symmetric(horizontal=10, vertical=5),
+                            alignment=ft.alignment.center),
                     ], spacing=0, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                    ft.Container(height=6),
+                    ft.Container(height=SPACE_SM),
                     # 第二行：邮箱地址
-                    ft.Text(addr, size=15, weight=ft.FontWeight.W_500, color=self.clr_text),
-                    ft.Container(height=4),
+                    ft.Text(addr, size=FONT_LG, weight=FONT_SEMIBOLD, color=self.clr_text),
+                    ft.Container(height=SPACE_XS),
                     # 第三行：过期时间
-                    ft.Text(exp_time, size=12, color=exp_color),
+                    ft.Text(exp_time, size=FONT_SM, color=exp_color, weight=FONT_MEDIUM),
                     ft.Row([
                         ft.TextButton("查看收件箱", on_click=lambda e, email=em: self.show_inbox(email),
                             style=ft.ButtonStyle(color=THEME_COLOR)),
                         ft.TextButton("复制", on_click=lambda e, a=addr: self._copy_email(a),
                             style=ft.ButtonStyle(color=self.clr_text2)),
                         ft.TextButton("删除", on_click=lambda e, eid=email_id: self._delete_email(eid),
-                            style=ft.ButtonStyle(color=ft.colors.RED)),
+                            style=ft.ButtonStyle(color=COLOR_DANGER)),
                     ], spacing=0),
-                ], spacing=4),
-                bgcolor=self.clr_card, border_radius=12, padding=16,
-                margin=ft.margin.only(16, 6, 16, 6),
+                ], spacing=SPACE_XS),
+                bgcolor=self.clr_card, border_radius=RADIUS_LG, padding=SPACE_LG,
+                margin=ft.margin.only(SPACE_LG, 6, SPACE_LG, 6),
+                shadow=ft.BoxShadow(
+                    spread_radius=0, blur_radius=10,
+                    color=ft.colors.with_opacity(0.07, ft.colors.BLACK),
+                    offset=ft.Offset(0, 3),
+                ),
             ))
 
     def _start_countdown(self):
@@ -3049,179 +3326,6 @@ class TempMailApp:
         self.page.update()
 
     # ========== 号码页面 ==========
-    def render_phone_page(self):
-        self.content.controls.clear()
-        self.page.floating_action_button = None
-        self.content.controls.append(ft.Container(
-            content=ft.Row([
-                ft.Text("临时号码", size=28, weight=ft.FontWeight.BOLD, expand=True),
-                ft.IconButton(ft.icons.REFRESH, icon_size=22, on_click=lambda e: self.refresh_phone_numbers()),
-            ]),
-            padding=ft.padding.only(20, 50, 20, 10),
-        ))
-        self.content.controls.append(ft.Container(
-            content=ft.Text("免费接收短信验证码", size=13, color=ft.colors.GREY_500),
-            padding=ft.padding.only(20, 0, 20, 10),
-        ))
-        self._phone_list = ft.ListView([], spacing=0, expand=True, padding=16)
-        self.content.controls.append(self._phone_list)
-        
-        # 如果有缓存的号码，直接显示
-        if hasattr(self, '_cached_phone_numbers') and self._cached_phone_numbers:
-            self._render_phone_numbers(self._cached_phone_numbers)
-        else:
-            self._phone_list.controls.append(ft.Container(
-                content=ft.Column([
-                    ft.ProgressRing(width=40, height=40, color=THEME_COLOR, stroke_width=3),
-                    ft.Container(height=12),
-                    ft.Text("正在获取号码列表...", size=14, color=ft.colors.GREY_500),
-                ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
-                alignment=ft.alignment.center,
-                padding=ft.padding.only(0, 60, 0, 0),
-            ))
-            self.page.update()
-            self.refresh_phone_numbers()
-
-    def refresh_phone_numbers(self):
-        """刷新号码列表"""
-        def refresh_thread():
-            try:
-                html_content = sms_fetch_page("https://www.free-sms-receive.com/")
-                numbers = sms_parse_numbers(html_content)
-                self._cached_phone_numbers = numbers
-                self.page.run_thread(lambda: self._render_phone_numbers(numbers))
-            except Exception as e:
-                self.page.run_thread(lambda: self._show_phone_error(str(e)))
-        threading.Thread(target=refresh_thread, daemon=True).start()
-
-    def _render_phone_numbers(self, numbers):
-        """渲染号码列表"""
-        self._phone_list.controls.clear()
-        if not numbers:
-            self._phone_list.controls.append(ft.Container(
-                content=ft.Column([
-                    ft.Text("📱", size=60),
-                    ft.Text("暂无号码", size=16, color=ft.colors.GREY_500),
-                ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=12),
-                alignment=ft.alignment.center,
-                padding=ft.padding.only(0, 60, 0, 0),
-            ))
-        else:
-            for p in numbers:
-                self._phone_list.controls.append(ft.Container(
-                    content=ft.Row([
-                        ft.Container(content=ft.Icon(ft.icons.PHONE, size=24, color=THEME_COLOR),
-                            width=48, height=48, bgcolor=ft.colors.BLUE_50,
-                            border_radius=24, alignment=ft.alignment.center),
-                        ft.Container(width=12),
-                        ft.Column([
-                            ft.Text(p.get("country", ""), size=14, weight=ft.FontWeight.W_500),
-                            ft.Text(p.get("number", ""), size=16, weight=ft.FontWeight.BOLD),
-                        ], spacing=2, expand=True),
-                        ft.Icon(ft.icons.CHEVRON_RIGHT, size=20, color=ft.colors.GREY_400),
-                    ]),
-                    bgcolor=ft.colors.WHITE, border_radius=12, padding=16,
-                    margin=ft.margin.only(0, 4, 0, 4),
-                    on_click=lambda e, phone=p: self.show_phone_messages(phone),
-                ))
-        self.page.update()
-
-    def _show_phone_error(self, err):
-        """显示号码错误"""
-        self._phone_list.controls.clear()
-        self._phone_list.controls.append(ft.Container(
-            content=ft.Column([
-                ft.Text("❌", size=60),
-                ft.Text("获取失败", size=16, color=ft.colors.RED),
-                ft.Text(str(err)[:50], size=12, color=ft.colors.GREY_500),
-            ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=12),
-            alignment=ft.alignment.center,
-            padding=ft.padding.only(0, 60, 0, 0),
-        ))
-        self.page.update()
-
-    def show_phone_messages(self, phone):
-        """显示号码收到的短信"""
-        self.current_phone = phone
-        self.content.controls.clear()
-        self.page.floating_action_button = None
-        # 顶部固定栏
-        self.content.controls.append(ft.Container(
-            content=ft.Row([
-                ft.IconButton(ft.icons.ARROW_BACK, icon_size=24, on_click=lambda e: self.render_phone_page()),
-                ft.Column([
-                    ft.Text(phone.get("number", ""), size=18, weight=ft.FontWeight.BOLD),
-                    ft.Text(phone.get("country", ""), size=12, color=ft.colors.GREY_500),
-                ], expand=True, spacing=2),
-                ft.IconButton(ft.icons.REFRESH, icon_size=22, on_click=lambda e: self.refresh_phone_messages()),
-            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-            padding=ft.padding.only(10, 45, 10, 5),
-            bgcolor=ft.colors.WHITE,
-        ))
-        self.content.controls.append(ft.Container(height=1, bgcolor=ft.colors.GREY_200))
-        # 短信列表（可滑动）
-        self._sms_list = ft.ListView([], spacing=0, expand=True, padding=16)
-        self.content.controls.append(self._sms_list)
-        self.page.update()
-        self.refresh_phone_messages()
-
-    def refresh_phone_messages(self):
-        """刷新短信列表"""
-        phone = self.current_phone
-        url = phone.get("url", "")
-        
-        def refresh_thread():
-            try:
-                html_content = sms_fetch_page(url)
-                messages = sms_parse_messages(html_content)
-                self.page.run_thread(lambda: self._render_sms_messages(messages))
-            except Exception as e:
-                self.page.run_thread(lambda: self._show_sms_error(str(e)))
-        threading.Thread(target=refresh_thread, daemon=True).start()
-
-    def _render_sms_messages(self, messages):
-        """渲染短信列表"""
-        self._sms_list.controls.clear()
-        if not messages:
-            self._sms_list.controls.append(ft.Container(
-                content=ft.Column([
-                    ft.Text("📭", size=60),
-                    ft.Text("暂无短信", size=16, color=ft.colors.GREY_500),
-                ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=12),
-                alignment=ft.alignment.center,
-                padding=ft.padding.only(0, 60, 0, 0),
-            ))
-        else:
-            for msg in messages:
-                self._sms_list.controls.append(ft.Container(
-                    content=ft.Column([
-                        ft.Row([
-                            ft.Text(msg.get("sender", "未知"), size=14, weight=ft.FontWeight.W_500, expand=True),
-                            ft.Text(msg.get("time", ""), size=11, color=ft.colors.GREY_400),
-                        ]),
-                        ft.Container(height=4),
-                        ft.Text(msg.get("content", ""), size=13, color=ft.colors.GREY_700),
-                    ], spacing=0),
-                    bgcolor=ft.colors.WHITE, border_radius=10, padding=14,
-                    margin=ft.margin.only(0, 4, 0, 4),
-                ))
-        self.page.update()
-
-    def _show_sms_error(self, err):
-        """显示短信错误"""
-        self._sms_list.controls.clear()
-        self._sms_list.controls.append(ft.Container(
-            content=ft.Column([
-                ft.Text("❌", size=60),
-                ft.Text("获取失败", size=16, color=ft.colors.RED),
-                ft.Text(str(err)[:50], size=12, color=ft.colors.GREY_500),
-            ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=12),
-            alignment=ft.alignment.center,
-            padding=ft.padding.only(0, 60, 0, 0),
-        ))
-        self.page.update()
-
-    # ========== 频道页面 ==========
     def render_channel_page(self):
         """频道列表页面"""
         self.content.controls.clear()
@@ -3943,18 +4047,24 @@ class TempMailApp:
                     )
                 self._channel_list.controls.append(ft.Container(
                     content=ft.Row([
-                        ft.Container(content=ft.Text(ch.get("icon", "📺"), size=24),
-                            width=48, height=48, bgcolor=ft.colors.BLUE_50,
-                            border_radius=24, alignment=ft.alignment.center),
+                        ft.Container(content=ft.Text(ch.get("icon", "📺"), size=22),
+                            width=48, height=48,
+                            bgcolor=ft.colors.with_opacity(0.12, THEME_COLOR),
+                            border_radius=RADIUS_PILL, alignment=ft.alignment.center),
                         ft.Container(width=12),
                         ft.Column([
-                            ft.Text(ch.get("name", ""), size=15, weight=ft.FontWeight.W_500, color=self.clr_text),
-                            ft.Text(ch.get("desc", ""), size=12, color=self.clr_text2),
+                            ft.Text(ch.get("name", ""), size=FONT_MD, weight=FONT_SEMIBOLD, color=self.clr_text),
+                            ft.Text(ch.get("desc", ""), size=FONT_SM, color=self.clr_text2),
                         ], spacing=2, expand=True),
                         unread_badge,
-                    ]),
-                    bgcolor=self.clr_card, border_radius=12, padding=14,
+                    ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    bgcolor=self.clr_card, border_radius=RADIUS_MD, padding=SPACE_MD,
                     margin=ft.margin.only(0, 4, 0, 4),
+                    shadow=ft.BoxShadow(
+                        spread_radius=0, blur_radius=8,
+                        color=ft.colors.with_opacity(0.05, ft.colors.BLACK),
+                        offset=ft.Offset(0, 2),
+                    ),
                     on_click=lambda e, channel=ch: self.show_channel_chat(channel),
                 ))
         self.page.update()
@@ -3967,19 +4077,33 @@ class TempMailApp:
         self.content.scroll = None  # 关闭整体滚动，确保布局稳定
         # 成员数量文本（后续从网站API获取实际数量后更新）
         self._channel_members_text = ft.Text("加载中... 成员", size=12, color=self.clr_text2)
-        # 底部输入框（先创建，确保引用存在）
+        # 底部输入框（现代风格：胶囊形状+填充背景）
         self._chat_input = ft.TextField(
             hint_text="输入消息...", expand=True,
-            border_radius=20, bgcolor=self.clr_bg,
+            hint_style=ft.TextStyle(color=self.clr_text2, size=FONT_MD),
+            text_style=ft.TextStyle(color=self.clr_text, size=FONT_MD),
+            border_radius=RADIUS_PILL, bgcolor=self.clr_card,
             border_color=self.clr_border, border_width=1,
-            height=44, text_size=14,
-            content_padding=ft.padding.symmetric(horizontal=16, vertical=10),
+            focused_border_color=THEME_COLOR, focused_border_width=1.5,
+            height=44,
+            content_padding=ft.padding.symmetric(horizontal=18, vertical=10),
             suffix_text="0/500",
+            suffix_style=ft.TextStyle(color=self.clr_text2, size=11),
+            cursor_color=THEME_COLOR,
             on_change=self._on_chat_input_change,
         )
-        send_btn = ft.IconButton(
-            ft.icons.SEND, icon_size=22, icon_color=THEME_COLOR,
+        send_btn = ft.Container(
+            content=ft.Icon(ft.icons.SEND, size=20, color=ft.colors.WHITE),
+            width=44, height=44,
+            bgcolor=THEME_COLOR,
+            border_radius=RADIUS_PILL,
+            alignment=ft.alignment.center,
             on_click=lambda e: self.send_channel_message(),
+            shadow=ft.BoxShadow(
+                spread_radius=0, blur_radius=8,
+                color=ft.colors.with_opacity(0.3, THEME_COLOR),
+                offset=ft.Offset(0, 2),
+            ),
         )
         # 消息列表（可滑动，初始显示加载提示）
         self._chat_message_list = ft.ListView([
@@ -4572,8 +4696,12 @@ class TempMailApp:
 
         # ---- 通用设置 ----
         scroll_content.controls.append(ft.Container(
-            content=ft.Text("通用", size=13, color=self.clr_text2),
-            padding=ft.padding.only(20, 10, 20, 6),
+            content=ft.Row([
+                ft.Container(width=3, height=12, bgcolor=THEME_COLOR, border_radius=2),
+                ft.Container(width=6),
+                ft.Text("通用", size=13, color=self.clr_text2, weight=ft.FontWeight.W_600),
+            ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.padding.only(20, 12, 20, 6),
         ))
 
         # 收件箱自动刷新开关
@@ -4645,7 +4773,11 @@ class TempMailApp:
 
         # ---- 数据与缓存 ----
         scroll_content.controls.append(ft.Container(
-            content=ft.Text("数据", size=13, color=self.clr_text2),
+            content=ft.Row([
+                ft.Container(width=3, height=12, bgcolor=ft.colors.GREEN, border_radius=2),
+                ft.Container(width=6),
+                ft.Text("数据", size=13, color=self.clr_text2, weight=ft.FontWeight.W_600),
+            ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
             padding=ft.padding.only(20, 14, 20, 6),
         ))
         scroll_content.controls.append(self._build_menu_item(
@@ -4655,7 +4787,11 @@ class TempMailApp:
 
         # ---- 关于 ----
         scroll_content.controls.append(ft.Container(
-            content=ft.Text("关于", size=13, color=self.clr_text2),
+            content=ft.Row([
+                ft.Container(width=3, height=12, bgcolor=ft.colors.BLUE, border_radius=2),
+                ft.Container(width=6),
+                ft.Text("关于", size=13, color=self.clr_text2, weight=ft.FontWeight.W_600),
+            ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
             padding=ft.padding.only(20, 14, 20, 6),
         ))
         scroll_content.controls.append(self._build_menu_item(
@@ -4674,7 +4810,11 @@ class TempMailApp:
         # ---- 账户（修改密码、退出登录） ----
         if self.current_user:
             scroll_content.controls.append(ft.Container(
-                content=ft.Text("账户", size=13, color=self.clr_text2),
+                content=ft.Row([
+                    ft.Container(width=3, height=12, bgcolor=ft.colors.ORANGE, border_radius=2),
+                    ft.Container(width=6),
+                    ft.Text("账户", size=13, color=self.clr_text2, weight=ft.FontWeight.W_600),
+                ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 padding=ft.padding.only(20, 14, 20, 6),
             ))
             # 修改密码
@@ -4696,6 +4836,20 @@ class TempMailApp:
                 on_click=self.logout,
             ))
 
+        # 底部版本信息
+        _app_ver = APP_CONFIG.get("app_version", "1.0.0")
+        scroll_content.controls.append(ft.Container(height=16))
+        scroll_content.controls.append(ft.Container(
+            content=ft.Column([
+                ft.Text(f"YoXi邮箱 v{_app_ver}", size=12, color=self.clr_text2,
+                    text_align=ft.TextAlign.CENTER),
+                ft.Container(height=2),
+                ft.Text("临时邮箱，触手可及", size=11,
+                    color=ft.colors.with_opacity(0.5, self.clr_text2),
+                    text_align=ft.TextAlign.CENTER),
+            ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.padding.symmetric(vertical=10),
+        ))
         scroll_content.controls.append(ft.Container(height=20))
         self.content.controls.append(scroll_content)
         self.page.update()
@@ -4728,23 +4882,23 @@ class TempMailApp:
         current_icon = self.settings.get("app_icon", local_icon_path)
         current_icon_type = self.settings.get("app_icon_type", "image")
 
-        # 用三行Row布局（每行3个，3行3列，尺寸自适应弹窗）
+        # 用三行Row布局（每行3个，3行3列）
         row1 = ft.Row([], spacing=12, alignment=ft.MainAxisAlignment.CENTER)
         row2 = ft.Row([], spacing=12, alignment=ft.MainAxisAlignment.CENTER)
         row3 = ft.Row([], spacing=12, alignment=ft.MainAxisAlignment.CENTER)
 
         for i, icon_info in enumerate(app_icons):
-            icon_type = icon_info.get("type", "preset")
+            icon_type = icon_info.get("type", "image")
             # 判断是否选中
             if icon_type == "image":
                 is_selected = current_icon_type == "image" and current_icon == icon_info.get("image_path", "")
             elif icon_type == "custom":
                 is_selected = current_icon_type == "custom"
             else:
-                is_selected = icon_info.get("emoji") == current_icon and current_icon_type == "preset"
+                is_selected = False
             # 正方形56x56，圆角16
             if icon_type == "image":
-                # 图片图标
+                # 图片图标（全部默认图标）
                 icon_content = ft.Container(
                     content=ft.Image(src=icon_info["image_path"], width=44, height=44, fit=ft.ImageFit.CONTAIN),
                     width=56, height=56,
@@ -4764,15 +4918,7 @@ class TempMailApp:
                     border=ft.border.all(2, ft.colors.GREY_300),
                 )
             else:
-                # emoji图标
-                icon_content = ft.Container(
-                    content=ft.Text(icon_info.get("emoji", "📧"), size=28),
-                    width=56, height=56,
-                    bgcolor=THEME_COLOR if is_selected else ft.colors.GREY_100,
-                    border_radius=16,
-                    alignment=ft.alignment.center,
-                    border=ft.border.all(2, THEME_COLOR) if is_selected else None,
-                )
+                icon_content = ft.Container(width=56, height=56)
             icon_item = ft.Container(
                 content=ft.Column([
                     icon_content,
@@ -4822,28 +4968,19 @@ class TempMailApp:
         self.page.update()
 
     def _select_app_icon(self, icon_info):
-        """选择应用图标（支持图片、emoji和自定义）"""
-        icon_type = icon_info.get("type", "preset")
+        """选择应用图标（支持图片和自定义）"""
+        icon_type = icon_info.get("type", "image")
         if icon_type == "custom":
-            # 自定义图标：打开文件选择器，让用户选择相册中的图片
+            # 自定义图标：打开文件选择器
             self._close_dialog()
             self._pick_custom_icon()
             return
-        if icon_type == "image":
-            # 图片图标
-            icon_value = icon_info.get("image_path", "")
-        else:
-            # emoji图标
-            icon_value = icon_info.get("emoji", "📧")
+        icon_value = icon_info.get("image_path", "")
         self.settings["app_icon"] = icon_value
-        self.settings["app_icon_type"] = icon_type
+        self.settings["app_icon_type"] = "image"
         save_settings(self.settings)
         self._close_dialog()
-        if icon_type == "image":
-            self._show_toast("已选择默认图标")
-        else:
-            self._show_toast("应用图标已更新")
-        # 刷新设置页面
+        self._show_toast("应用图标已更新")
         self.render_settings_page()
 
     def _pick_custom_icon(self):
@@ -4911,18 +5048,24 @@ class TempMailApp:
         return ft.Text(icon_value, size=size, weight=ft.FontWeight.BOLD)
 
     def _build_menu_item(self, icon, icon_color, label, on_click):
-        """构建设置菜单项（通用样式）"""
+        """构建设置菜单项（现代风格：阴影+圆角+图标背景）"""
         return ft.Container(
             content=ft.Row([
                 ft.Container(content=ft.Icon(icon, size=18, color=icon_color),
-                    width=32, height=32, bgcolor=self.clr_input_bg,
-                    border_radius=8, alignment=ft.alignment.center),
-                ft.Container(width=10),
-                ft.Text(label, size=15, expand=True, color=self.clr_text),
-                ft.Icon(ft.icons.CHEVRON_RIGHT, size=18, color=self.clr_text2),
+                    width=30, height=30,
+                    bgcolor=ft.colors.with_opacity(0.12, icon_color),
+                    border_radius=9, alignment=ft.alignment.center),
+                ft.Container(width=8),
+                ft.Text(label, size=FONT_MD, expand=True, color=self.clr_text, weight=FONT_MEDIUM),
+                ft.Icon(ft.icons.CHEVRON_RIGHT, size=18, color=self.clr_text3),
             ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            bgcolor=self.clr_card, border_radius=12, padding=14,
-            margin=ft.margin.only(16, 2, 16, 2),
+            bgcolor=self.clr_card, border_radius=RADIUS_MD, padding=14,
+            margin=ft.margin.only(SPACE_LG, 3, SPACE_LG, 3),
+            shadow=ft.BoxShadow(
+                spread_radius=0, blur_radius=8,
+                color=ft.colors.with_opacity(0.06, ft.colors.BLACK),
+                offset=ft.Offset(0, 2),
+            ),
             on_click=on_click,
         )
 
@@ -5100,9 +5243,9 @@ class TempMailApp:
         return ft.Container(
             content=ft.Row([
                 ft.Container(content=ft.Icon(icon, size=18, color=icon_color),
-                    width=32, height=32, bgcolor=self.clr_input_bg,
+                    width=30, height=30, bgcolor=self.clr_input_bg,
                     border_radius=8, alignment=ft.alignment.center),
-                ft.Container(width=10),
+                ft.Container(width=8),
                 ft.Text(label, size=15, expand=True, color=self.clr_text),
                 ft.Row(option_buttons, spacing=4),
             ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
@@ -5411,15 +5554,15 @@ class TempMailApp:
         if mode == "light":
             self.page.theme_mode = ft.ThemeMode.LIGHT
             self._set_light_colors()
-            self.page.bgcolor = ft.colors.GREY_100
+            self.page.bgcolor = LIGHT_BG
         elif mode == "dark":
             self.page.theme_mode = ft.ThemeMode.DARK
             self._set_dark_colors()
-            self.page.bgcolor = ft.colors.BLACK
+            self.page.bgcolor = DARK_BG
         else:
             self.page.theme_mode = ft.ThemeMode.SYSTEM
             self._set_light_colors()
-            self.page.bgcolor = ft.colors.GREY_100
+            self.page.bgcolor = LIGHT_BG
         self._update_navbar_theme()
 
     def _update_navbar_theme(self):
@@ -5431,22 +5574,26 @@ class TempMailApp:
             pass
 
     def _set_light_colors(self):
-        self.clr_bg = ft.colors.GREY_100
-        self.clr_card = ft.colors.WHITE
-        self.clr_header_bg = ft.colors.GREY_50
-        self.clr_text = ft.colors.BLACK
-        self.clr_text2 = ft.colors.GREY_500
-        self.clr_border = ft.colors.GREY_200
-        self.clr_input_bg = ft.colors.GREY_100
+        """浅色主题（iOS风格）"""
+        self.clr_bg = LIGHT_BG
+        self.clr_card = LIGHT_CARD
+        self.clr_header_bg = LIGHT_HEADER
+        self.clr_text = LIGHT_TEXT
+        self.clr_text2 = LIGHT_TEXT2
+        self.clr_text3 = LIGHT_TEXT3
+        self.clr_border = LIGHT_BORDER
+        self.clr_input_bg = LIGHT_INPUT
 
     def _set_dark_colors(self):
-        self.clr_bg = ft.colors.BLACK
-        self.clr_card = ft.colors.GREY_900
-        self.clr_header_bg = ft.colors.GREY_800
-        self.clr_text = ft.colors.WHITE
-        self.clr_text2 = ft.colors.GREY_400
-        self.clr_border = ft.colors.GREY_700
-        self.clr_input_bg = ft.colors.GREY_800
+        """深色主题（iOS风格）"""
+        self.clr_bg = DARK_BG
+        self.clr_card = DARK_CARD
+        self.clr_header_bg = DARK_HEADER
+        self.clr_text = DARK_TEXT
+        self.clr_text2 = DARK_TEXT2
+        self.clr_text3 = DARK_TEXT3
+        self.clr_border = DARK_BORDER
+        self.clr_input_bg = DARK_INPUT
 
     def _set_theme_mode(self, mode):
         """设置主题模式并保存，同时刷新当前页面"""
@@ -5621,24 +5768,45 @@ class TempMailApp:
         self.content.controls.append(scroll_content)
         self.page.update()
 
-    def _show_toast(self, msg):
-        """右上角弹出提示（不用底部SnackBar）"""
+    def _show_toast(self, msg, msg_type="success"):
+        """右上角弹出提示（现代风格：阴影+圆角+图标）"""
         try:
             self.page.snack_bar = None
+            # 根据类型选择图标和颜色
+            icon_map = {
+                "success": (ft.icons.CHECK_CIRCLE, COLOR_SUCCESS),
+                "error": (ft.icons.ERROR, COLOR_DANGER),
+                "warning": (ft.icons.WARNING, COLOR_WARNING),
+                "info": (ft.icons.INFO, COLOR_INFO),
+            }
+            icon, icon_color = icon_map.get(msg_type, icon_map["success"])
             toast = ft.Container(
                 content=ft.Row([
-                    ft.Icon(ft.icons.CHECK_CIRCLE, size=18, color=ft.colors.GREEN),
-                    ft.Container(width=8),
-                    ft.Text(msg, size=14, color=self.clr_text),
-                ]),
-                bgcolor=self.clr_card, border_radius=12,
-                padding=ft.padding.symmetric(horizontal=16, vertical=12),
-                bottom=100, right=16,
+                    ft.Container(
+                        content=ft.Icon(icon, size=18, color=ft.colors.WHITE),
+                        width=28, height=28,
+                        bgcolor=icon_color,
+                        border_radius=14,
+                        alignment=ft.alignment.center,
+                    ),
+                    ft.Container(width=6),
+                    ft.Text(msg, size=FONT_MD, color=self.clr_text, weight=FONT_MEDIUM),
+                ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                bgcolor=self.clr_card,
+                border_radius=RADIUS_LG,
+                padding=ft.padding.symmetric(horizontal=SPACE_LG, vertical=SPACE_MD),
+                bottom=100, right=SPACE_LG,
+                shadow=ft.BoxShadow(
+                    spread_radius=1,
+                    blur_radius=15,
+                    color=ft.colors.with_opacity(0.15, ft.colors.BLACK),
+                    offset=ft.Offset(0, 4),
+                ),
             )
             self.page.overlay.append(toast)
             self.page.update()
             def remove_toast():
-                time.sleep(2)
+                time.sleep(2.2)
                 try:
                     if toast in self.page.overlay:
                         self.page.overlay.remove(toast)
@@ -5779,8 +5947,6 @@ class TempMailApp:
             self._cloud_emails_cache = []
             self._msg_counts = {}
             self._last_email_sync_time = 0
-            if hasattr(self, '_cached_phone_numbers'):
-                self._cached_phone_numbers = []
             if hasattr(self, '_cached_channel_messages'):
                 self._cached_channel_messages = []
             if hasattr(self, '_last_channel_msg_load_time'):
@@ -5899,5 +6065,42 @@ def main(page: ft.Page):
     app.main()
 
 
+def _pre_set_window_icon():
+    """在ft.app启动前就开始监控窗口，一创建就立马设置图标（几乎看不到默认图标）"""
+    try:
+        import time
+        import ctypes
+        from ctypes import wintypes
+        import os as _os
+        ico_path = _os.path.join(_base_dir, "assets", "app_icon.ico")
+        if not _os.path.exists(ico_path):
+            return
+        user32 = ctypes.windll.user32
+        win_title = APP_CONFIG.get("app_name", "YoXi邮箱")
+        # 高频轮询：每50ms查一次，最多等10秒
+        for _ in range(200):
+            hwnd = user32.FindWindowW(None, win_title)
+            if hwnd:
+                IMAGE_ICON = 1
+                LR_LOADFROMFILE = 0x00000010
+                hicon_big = user32.LoadImageW(None, ico_path, IMAGE_ICON, 256, 256, LR_LOADFROMFILE)
+                hicon_small = user32.LoadImageW(None, ico_path, IMAGE_ICON, 32, 32, LR_LOADFROMFILE)
+                WM_SETICON = 0x0080
+                ICON_BIG = 1
+                ICON_SMALL = 0
+                if hicon_big:
+                    user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, hicon_big)
+                if hicon_small:
+                    user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, hicon_small)
+                user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0020 | 0x0001 | 0x0002 | 0x0040)
+                print(f"[预启动图标] 窗口一创建就设置成功, hwnd={hwnd}")
+                return
+            time.sleep(0.05)
+    except Exception as e:
+        print(f"[预启动图标] 失败: {e}")
+
 if __name__ == "__main__":
+    import threading
+    # 在ft.app启动前就开始监控窗口，一创建就立马设置图标
+    threading.Thread(target=_pre_set_window_icon, daemon=True).start()
     ft.app(target=main)

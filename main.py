@@ -12,7 +12,7 @@ def main(page: ft.Page):
         import app_code
         app_code.main(page)
     except Exception as e:
-        # 如果出错，显示错误信息，避免黑屏
+        # 如果出错，显示错误信息，避免白屏
         error_text = ft.Text(
             f"启动错误:\n{str(e)}\n\n{traceback.format_exc()}",
             size=12, color=ft.colors.RED, selectable=True
