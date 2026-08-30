@@ -1,0 +1,87 @@
+Skip to content
+Navigation Menu
+Sign in
+Xiao-Yang-520
+/
+YoXi-
+Public
+Notifications
+Fork 0
+ Star 0
+Code
+Issues
+Pull requests
+Actions
+Projects
+Security and quality
+Insights
+Build Android & iOS
+Add Android & iOS build, cloud sync, app icon, logout loading #1
+Sign in to view logs
+Summary
+All jobs
+build-android
+build-ios
+Run details
+Usage
+Workflow file
+Triggered via push 
+Xiao-Yang-520
+pushed
+ d942983
+main
+Status
+Success
+Total duration
+1m 13s
+Artifacts
+2
+build.yml
+on: push
+build-android
+1m 9s
+build-ios
+1m 1s
+
+Oh hello! Nice to see you.
+
+Made with ❤️ by humans.txt
+
+Annotations
+5 warnings
+build-ios
+Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, actions/setup-python@v5, actions/upload-artifact@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+Show more
+
+
+build-ios
+No files were found with the provided path: **/*.ipa **/*.xcarchive. No artifacts will be uploaded.
+Show more
+
+
+build-android
+Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, actions/setup-java@v4, actions/setup-python@v5, actions/upload-artifact@v4, android-actions/setup-android@v3. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+Show more
+
+
+build-android
+No files were found with the provided path: **/*.apk. No artifacts will be uploaded.
+Show more
+
+
+build-android
+setup-java v4 is deprecated and will no longer receive updates. Please migrate to actions/setup-java@v5.
+Show more
+Artifacts
+Produced during runtime
+Name	Size	Digest	
+
+android-build-log
+	245 Bytes	
+sha256:538d09cba52cd91a5e09b7f5c7923b7d814bccf9c043cc758032d1e65e089956
+	
+
+
+ios-build-log
+	245 Bytes	
+sha256:c0fa9ae11ccca59e28630c22b581217297766f2f828503df8dd815727cc072be
