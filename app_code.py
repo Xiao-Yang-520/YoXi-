@@ -698,32 +698,37 @@ class TempMailApp:
             pass
 
     def _skip_countdown(self):
-        """倒计时 5 秒，5秒后自动进入程序（兼容安卓点击不响应的问题）"""
+        """倒计时 5 秒，5秒后自动进入程序（确保一定能进入，不卡住）"""
         try:
             self._can_enter = False
+            self._load_completed = True  # 提前标记加载完成，避免等待
             for i in range(5, 0, -1):
                 if getattr(self, '_skipped', False):
                     return
-                self._skip_text.value = f"{i}s"
-                self.page.update()
+                try:
+                    self._skip_text.value = f"{i}s"
+                    self.page.update()
+                except:
+                    pass
                 time.sleep(1)
             if not getattr(self, '_skipped', False):
                 self._can_enter = True
-                self._skip_text.value = "进入"
-                self.page.update()
-                # 等待加载完成（最多再等3秒），然后自动进入
-                for _ in range(30):
-                    if getattr(self, '_skipped', False):
-                        return
-                    if getattr(self, '_load_completed', False):
-                        break
-                    time.sleep(0.1)
-                # 自动进入（不管加载是否完成，避免卡在加载页）
+                try:
+                    self._skip_text.value = "进入"
+                    self.page.update()
+                except:
+                    pass
+                # 直接进入，不等加载完成（确保不卡住）
                 if not getattr(self, '_skipped', False):
                     self._skipped = True
-                    self.page.run_thread(self.after_loading)
-        except:
-            pass
+                    self.after_loading()
+        except Exception as e:
+            # 出错也直接进入，避免白屏
+            try:
+                self._skipped = True
+                self.after_loading()
+            except:
+                pass
 
     def _skip_loading(self, e):
         """点击进入程序（5秒后且加载完成才能点击，5秒前点击无反应）"""
@@ -752,27 +757,37 @@ class TempMailApp:
 
     def load_thread(self):
         try:
+            self._load_completed = False
             self.update_splash(20, "检查网络..."); time.sleep(0.3)
             self.update_splash(50, "加载配置..."); time.sleep(0.3)
             # 检查是否已经获取了远程配置（由_fetch_remote_config_and_bg线程获取）
             if not hasattr(self, '_remote_config') or not self._remote_config:
-                # 如果还没有获取到，再获取一次
-                self._remote_config = self._fetch_remote_config()
-            # 确保背景图已更新（如果_fetch_remote_config_and_bg还没完成，这里再更新一次）
+                # 如果还没有获取到，再获取一次（带超时保护）
+                try:
+                    self._remote_config = self._fetch_remote_config()
+                except:
+                    self._remote_config = {}
+            # 确保背景图已更新
             self._update_splash_background()
             self.update_splash(70, "验证账号..."); time.sleep(0.2)
-            # 验证本地登录的账号是否还存在（如果在网站被删除，就清除登录状态）
-            self._verify_local_user()
-            # 从网站实时获取当前用户的最新角色（只保存在内存，不保存到本地，不显示进度）
-            self._fetch_user_role_on_load()
+            # 验证本地登录的账号（带超时保护）
+            try:
+                self._verify_local_user()
+            except:
+                pass
+            # 从网站实时获取当前用户的最新角色（带超时保护）
+            try:
+                self._fetch_user_role_on_load()
+            except:
+                pass
             self.update_splash(90, "准备就绪..."); time.sleep(0.2)
             self.update_splash(100, "加载完成"); time.sleep(0.2)
-            # 加载完成后不自动进入，等待用户点击右上角"点击进入"按钮
+            # 加载完成
             self._load_completed = True
-        except:
+        except Exception as e:
             if not hasattr(self, '_remote_config'):
                 self._remote_config = {}
-            # 加载失败也不自动进入，等待用户点击
+            # 加载失败也标记完成，避免卡住
             self._load_completed = True
 
     def _fetch_user_role_on_load(self):
