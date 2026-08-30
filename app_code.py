@@ -757,9 +757,9 @@ class TempMailApp:
             pass
 
     def _skip_countdown(self):
-        """倒计时 5 秒，5秒后需要用户点击才能进入程序"""
+        """倒计时 5 秒，5秒后自动进入程序（兼容安卓点击不响应的问题）"""
         try:
-            self._can_enter = False  # 标记是否可以进入
+            self._can_enter = False
             for i in range(5, 0, -1):
                 if getattr(self, '_skipped', False):
                     return
@@ -767,9 +767,20 @@ class TempMailApp:
                 self.page.update()
                 time.sleep(1)
             if not getattr(self, '_skipped', False):
-                self._can_enter = True  # 5秒后可以点击进入
-                self._skip_text.value = "跳过"
+                self._can_enter = True
+                self._skip_text.value = "进入"
                 self.page.update()
+                # 等待加载完成（最多再等3秒），然后自动进入
+                for _ in range(30):
+                    if getattr(self, '_skipped', False):
+                        return
+                    if getattr(self, '_load_completed', False):
+                        break
+                    time.sleep(0.1)
+                # 自动进入（不管加载是否完成，避免卡在加载页）
+                if not getattr(self, '_skipped', False):
+                    self._skipped = True
+                    self.page.run_thread(self.after_loading)
         except:
             pass
 
@@ -2519,8 +2530,19 @@ class TempMailApp:
         ]
         type_buttons = []
         for et in email_types:
-            # 所有邮箱类型都用官方图标图片
-            icon_widget = ft.Image(src=et["icon_file"], width=28, height=28, fit=ft.ImageFit.CONTAIN)
+            # 所有邮箱类型都用官方图标图片（尝试多种路径确保移动端兼容）
+            icon_path = et["icon_file"]
+            candidate_paths = [
+                os.path.join(_base_dir, "assets", et["icon_file"]),
+                os.path.join(os.getcwd(), "assets", et["icon_file"]),
+                "assets/" + et["icon_file"],
+                et["icon_file"],
+            ]
+            for p in candidate_paths:
+                if os.path.exists(p):
+                    icon_path = p
+                    break
+            icon_widget = ft.Image(src=icon_path, width=28, height=28, fit=ft.ImageFit.CONTAIN)
             type_buttons.append(ft.Container(
                 content=ft.Row([
                     icon_widget,
@@ -4865,17 +4887,29 @@ class TempMailApp:
 
     def _show_app_icon_selector(self):
         """显示应用图标选择弹窗"""
-        # 本地图标路径
-        local_icon_path = os.path.join(_base_dir, "assets", "cute_email_icon.png")
-        qq_icon_path = os.path.join(_base_dir, "assets", "qq_email_icon.png")
-        netease_icon_path = os.path.join(_base_dir, "assets", "netease_email_icon.png")
-        gmail_icon_path = os.path.join(_base_dir, "assets", "gmail_icon.png")
-        custom_icon_1 = os.path.join(_base_dir, "assets", "custom_icon_1.png")
-        custom_icon_2 = os.path.join(_base_dir, "assets", "custom_icon_2.png")
-        custom_icon_3 = os.path.join(_base_dir, "assets", "custom_icon_3.png")
-        custom_icon_4 = os.path.join(_base_dir, "assets", "custom_icon_4.png")
-        custom_icon_5 = os.path.join(_base_dir, "assets", "custom_icon_5.png")
-        custom_icon_6 = os.path.join(_base_dir, "assets", "custom_icon_6.png")
+        # 本地图标路径（尝试多种路径确保移动端兼容）
+        def _find_asset_path(filename):
+            candidate_paths = [
+                os.path.join(_base_dir, "assets", filename),
+                os.path.join(os.getcwd(), "assets", filename),
+                "assets/" + filename,
+                filename,
+            ]
+            for p in candidate_paths:
+                if os.path.exists(p):
+                    return p
+            return candidate_paths[0]
+        
+        local_icon_path = _find_asset_path("cute_email_icon.png")
+        qq_icon_path = _find_asset_path("qq_email_icon.png")
+        netease_icon_path = _find_asset_path("netease_email_icon.png")
+        gmail_icon_path = _find_asset_path("gmail_icon.png")
+        custom_icon_1 = _find_asset_path("custom_icon_1.png")
+        custom_icon_2 = _find_asset_path("custom_icon_2.png")
+        custom_icon_3 = _find_asset_path("custom_icon_3.png")
+        custom_icon_4 = _find_asset_path("custom_icon_4.png")
+        custom_icon_5 = _find_asset_path("custom_icon_5.png")
+        custom_icon_6 = _find_asset_path("custom_icon_6.png")
         # 第一个：默认图标，然后是QQ邮箱、网易邮箱、谷歌邮箱、移动邮箱、未知邮箱、自定义图标
         app_icons = [
             {"name": "默认图标", "type": "image", "image_path": local_icon_path},
@@ -4989,7 +5023,7 @@ class TempMailApp:
         self.settings["app_icon_type"] = "image"
         save_settings(self.settings)
         self._close_dialog()
-        self._show_toast("应用图标已更新")
+        self._show_toast("应用图标已更新，重启应用后生效")
         self.render_settings_page()
 
     def _pick_custom_icon(self):
