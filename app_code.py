@@ -562,68 +562,72 @@ class TempMailApp:
 
     # ========== 加载页 ==========
     def show_loading(self):
-        """加载页（整体化设计：背景图铺满 + 毛玻璃卡片 + 呼吸动画 + 进度条）"""
+        """加载页（简单可靠布局，兼容安卓）"""
         self.page.controls.clear()
         self.page.navigation_bar = None
         self.page.padding = 0
         self.page.spacing = 0
         self.page.bgcolor = ft.colors.BLACK
         self._skipped = False
-        self._breathing_running = True
+        self._breathing_running = False
 
-        # 判断当前主题（用于文字颜色适配）
-        mode = self.settings.get("theme_mode", "system")
-        is_dark = mode == "dark"
-        text_on_bg = ft.colors.WHITE  # 背景图上统一用白色
-        text_glass = ft.colors.WHITE if is_dark else ft.colors.BLACK
-        glass_bg = ft.colors.with_opacity(0.25, ft.colors.BLACK if is_dark else ft.colors.WHITE)
+        app_name = APP_CONFIG.get("app_name", "YoXi邮箱")
+        app_version = APP_CONFIG.get("app_version", "1.0.0")
 
-        # 进度条和状态文字（修复：之前创建了但没显示）
+        # 进度条和状态文字
         self.progress = ft.ProgressBar(
             width=260, value=0, color=THEME_COLOR,
             bgcolor=ft.colors.with_opacity(0.3, ft.colors.WHITE),
             border_radius=4,
         )
-        self.status_text = ft.Text("正在加载...", size=12, color=text_on_bg, weight=FONT_MEDIUM)
+        self.status_text = ft.Text("正在加载...", size=12, color=ft.colors.WHITE, weight=FONT_MEDIUM)
 
-        # 右上角跳过按钮（毛玻璃半透明 + 胶囊 + 阴影）
-        self._skip_text = ft.Text("跳过 5s", size=13, color=text_on_bg, weight=FONT_MEDIUM)
+        # 右上角跳过按钮
+        self._skip_text = ft.Text("跳过 5s", size=13, color=ft.colors.WHITE, weight=FONT_MEDIUM)
         skip_btn = ft.GestureDetector(
             content=ft.Container(
                 content=ft.Row([
                     self._skip_text,
-                    ft.Icon(ft.icons.ARROW_FORWARD_IOS, size=12, color=text_on_bg),
+                    ft.Icon(ft.icons.ARROW_FORWARD_IOS, size=12, color=ft.colors.WHITE),
                 ], spacing=3),
                 bgcolor=ft.colors.with_opacity(0.3, ft.colors.BLACK),
                 border_radius=RADIUS_PILL,
                 padding=ft.padding.symmetric(horizontal=16, vertical=8),
-                shadow=ft.BoxShadow(
-                    spread_radius=0, blur_radius=10,
-                    color=ft.colors.with_opacity(0.3, ft.colors.BLACK),
-                    offset=ft.Offset(0, 2),
-                ),
             ),
             on_tap=self._skip_loading,
         )
 
-        # 中心应用图标（带呼吸动画容器）
-        app_name = APP_CONFIG.get("app_name", "YoXi邮箱")
-        app_version = APP_CONFIG.get("app_version", "1.0.0")
-        center_icon_widget = self._build_app_icon_widget(size=72)
-        self._splash_icon = ft.Container(
-            content=center_icon_widget,
-            width=96, height=96,
-            bgcolor=ft.colors.with_opacity(0.25, ft.colors.WHITE),
-            border_radius=24,
-            alignment=ft.alignment.center,
-            shadow=ft.BoxShadow(
-                spread_radius=0, blur_radius=20,
-                color=ft.colors.with_opacity(0.4, ft.colors.BLACK),
-                offset=ft.Offset(0, 6),
-            ),
+        # 底部卡片
+        _bottom_icon_path = self._get_current_app_icon()
+        bottom_icon_widget = ft.Image(
+            src=_bottom_icon_path, width=48, height=48,
+            fit=ft.ImageFit.COVER, border_radius=12,
+        )
+        bottom_card = ft.Container(
+            content=ft.Column([
+                self.progress,
+                ft.Container(height=8),
+                self.status_text,
+                ft.Container(height=12),
+                ft.Container(height=1, bgcolor=ft.colors.with_opacity(0.2, ft.colors.WHITE)),
+                ft.Container(height=10),
+                ft.Row([
+                    bottom_icon_widget,
+                    ft.Container(width=12),
+                    ft.Column([
+                        ft.Text(app_name, size=16, weight=FONT_BOLD, color=ft.colors.WHITE),
+                        ft.Container(height=2),
+                        ft.Text(f"版本 {app_version}", size=11, color=ft.colors.with_opacity(0.7, ft.colors.WHITE)),
+                    ], spacing=0, alignment=ft.MainAxisAlignment.CENTER),
+                ], alignment=ft.MainAxisAlignment.CENTER, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+            bgcolor=ft.colors.with_opacity(0.25, ft.colors.BLACK),
+            border_radius=RADIUS_XL,
+            padding=ft.padding.only(top=18, bottom=18, left=20, right=20),
+            margin=ft.margin.only(left=20, right=20, bottom=24),
         )
 
-        # 本地背景图路径（尝试多种路径，确保移动端兼容）
+        # 背景图路径（多路径尝试）
         candidate_bg_paths = [
             os.path.join(_base_dir, "assets", "app_background.jpg"),
             os.path.join(os.getcwd(), "assets", "app_background.jpg"),
@@ -635,80 +639,19 @@ class TempMailApp:
                 local_bg_path = path
                 break
 
-        # 底部毛玻璃卡片（进度条 + 状态文字 + 应用信息）
-        # 图标用COVER填满，去掉透明边距，看起来更大
-        _bottom_icon_path = self._get_current_app_icon()
-        bottom_icon_widget = ft.Image(
-            src=_bottom_icon_path, width=56, height=56,
-            fit=ft.ImageFit.COVER,
-        )
-        bottom_card = ft.Container(
-            content=ft.Column([
-                # 进度条
-                self.progress,
-                ft.Container(height=8),
-                # 状态文字
-                self.status_text,
-                ft.Container(height=14),
-                # 分割线
-                ft.Container(height=1, bgcolor=ft.colors.with_opacity(0.2, ft.colors.WHITE)),
-                ft.Container(height=12),
-                # 应用信息（图标放大，去掉右侧slogan）
-                ft.Row([
-                    ft.Container(
-                        content=bottom_icon_widget,
-                        width=56, height=56,
-                        bgcolor=ft.colors.with_opacity(0.3, ft.colors.WHITE),
-                        border_radius=16,
-                        alignment=ft.alignment.center,
-                        clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
-                    ),
-                    ft.Container(width=14),
-                    ft.Column([
-                        ft.Text(app_name, size=17, weight=FONT_BOLD, color=text_on_bg),
-                        ft.Container(height=2),
-                        ft.Text(f"版本 {app_version}", size=12, color=ft.colors.with_opacity(0.7, text_on_bg)),
-                    ], spacing=0, alignment=ft.MainAxisAlignment.CENTER),
-                ], alignment=ft.MainAxisAlignment.CENTER, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
-            bgcolor=ft.colors.with_opacity(0.2, ft.colors.BLACK),
-            border_radius=RADIUS_XL,
-            padding=ft.padding.only(top=20, bottom=20, left=22, right=22),
-            margin=ft.margin.only(left=20, right=20, bottom=24),
-            shadow=ft.BoxShadow(
-                spread_radius=0, blur_radius=25,
-                color=ft.colors.with_opacity(0.4, ft.colors.BLACK),
-                offset=ft.Offset(0, -4),
-            ),
-        )
-
-        # 整体布局：背景图铺满 + 右上角跳过 + 底部毛玻璃卡片
+        # 简单布局：背景Container + Column内容（不用Stack，兼容安卓）
         full_page = ft.Container(
-            content=ft.Stack([
-                # 背景图（铺满全屏）
+            content=ft.Column([
                 ft.Container(
-                    expand=True,
-                    image_src=local_bg_path,
-                    image_fit=ft.ImageFit.COVER,
+                    content=ft.Row([skip_btn], alignment=ft.MainAxisAlignment.END),
+                    padding=ft.padding.only(top=50, right=16),
                 ),
-                # 黑色半透明遮罩（增强文字可读性）
-                ft.Container(
-                    expand=True,
-                    bgcolor=ft.colors.with_opacity(0.35, ft.colors.BLACK),
-                ),
-                # 内容层（背景图干净，只保留顶部跳过和底部卡片）
-                ft.Column([
-                    # 顶部：跳过按钮
-                    ft.Container(
-                        content=ft.Row([skip_btn], alignment=ft.MainAxisAlignment.END),
-                        padding=ft.padding.only(top=50, right=16),
-                    ),
-                    ft.Container(expand=True),
-                    # 底部：毛玻璃卡片
-                    bottom_card,
-                ], spacing=0, expand=True),
-            ]),
+                ft.Container(expand=True),
+                bottom_card,
+            ], spacing=0, expand=True),
             expand=True,
+            image_src=local_bg_path,
+            image_fit=ft.ImageFit.COVER,
             bgcolor=ft.colors.BLACK,
         )
 
@@ -716,11 +659,9 @@ class TempMailApp:
         self.page.add(full_page)
         self.page.update()
 
-        # 启动呼吸动画
-        threading.Thread(target=self._breathing_animation, daemon=True).start()
-        # 跳过倒计时
+        # 跳过倒计时（5秒后自动进入）
         threading.Thread(target=self._skip_countdown, daemon=True).start()
-        # 立即获取远程配置
+        # 获取远程配置
         threading.Thread(target=self._fetch_remote_config_and_bg, daemon=True).start()
         # 加载线程
         threading.Thread(target=self.load_thread, daemon=True).start()
@@ -5027,31 +4968,45 @@ class TempMailApp:
         self.render_settings_page()
 
     def _pick_custom_icon(self):
-        """打开文件选择器，让用户选择自定义图标"""
+        """打开文件选择器，让用户选择自定义图标（支持移动端相册）"""
         try:
-            import tkinter as tk
-            from tkinter import filedialog
-            root = tk.Tk()
-            root.withdraw()
-            file_path = filedialog.askopenfilename(
-                title="选择应用图标",
-                filetypes=[("图片文件", "*.png *.jpg *.jpeg *.gif *.bmp"), ("所有文件", "*.*")]
+            # 使用Flet原生文件选择器，支持移动端相册
+            def on_file_picked(e):
+                try:
+                    if e.files and len(e.files) > 0:
+                        file_path = e.files[0].path
+                        if file_path:
+                            # 复制用户选择的图片到assets目录
+                            import shutil
+                            custom_icon_path = os.path.join(_base_dir, "assets", "user_custom_icon.png")
+                            # 确保assets目录存在
+                            os.makedirs(os.path.dirname(custom_icon_path), exist_ok=True)
+                            shutil.copy(file_path, custom_icon_path)
+                            # 保存自定义图标
+                            self.settings["app_icon"] = custom_icon_path
+                            self.settings["app_icon_type"] = "custom"
+                            save_settings(self.settings)
+                            self._show_toast("自定义图标已设置，重启应用后生效")
+                            # 刷新设置页面
+                            self.render_settings_page()
+                    else:
+                        self._show_toast("未选择图片")
+                except Exception as ex:
+                    self._show_toast(f"选择图片失败: {str(ex)}")
+            
+            # 创建文件选择器
+            file_picker = ft.FilePicker(on_result=on_file_picked)
+            self.page.overlay.append(file_picker)
+            self.page.update()
+            
+            # 打开文件选择器，只允许选择图片
+            file_picker.pick_files(
+                allow_multiple=False,
+                allowed_extensions=["png", "jpg", "jpeg", "gif", "bmp", "webp"],
+                dialog_title="选择应用图标"
             )
-            root.destroy()
-            if file_path:
-                # 复制用户选择的图片到assets目录
-                import shutil
-                custom_icon_path = os.path.join(_base_dir, "assets", "user_custom_icon.png")
-                shutil.copy(file_path, custom_icon_path)
-                # 保存自定义图标
-                self.settings["app_icon"] = custom_icon_path
-                self.settings["app_icon_type"] = "custom"
-                save_settings(self.settings)
-                self._show_toast("自定义图标已设置")
-                # 刷新设置页面
-                self.render_settings_page()
         except Exception as e:
-            self._show_toast("选择图片失败，请重试")
+            self._show_toast(f"打开相册失败: {str(e)}")
     
     def _get_current_app_icon(self):
         """获取当前应用图标（支持图片和emoji）"""
