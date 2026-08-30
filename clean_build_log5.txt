@@ -1,0 +1,118 @@
+﻿Creating Flutter bootstrap project...OK
+Customizing app icons and splash images...OK
+Generating app icons...OK
+Generating splash screens...OK
+Packaging Python app...OK
+Building .apk for Android...Resolving dependencies...
+Downloading packages...
+  archive 3.6.1 (4.2.0 available)
+  async 2.11.0 (2.13.1 available)
+  boolean_selector 2.1.1 (2.1.2 available)
+  characters 1.3.0 (1.4.1 available)
+  checked_yaml 2.0.3 (2.0.4 available)
+  cli_util 0.4.2 (0.6.0 available)
+  clock 1.1.1 (1.1.3 available)
+  collection 1.18.0 (1.19.1 available)
+  cross_file 0.3.4+2 (0.3.5+5 available)
+  cupertino_icons 1.0.8 (1.0.9 available)
+  fake_async 1.3.1 (1.3.3 available)
+  ffi 2.1.3 (2.2.0 available)
+  file_picker 8.0.7 (12.1.2 available)
+  fl_chart 0.65.0 (1.2.0 available)
+  flet 0.22.1 (0.86.5 available)
+  flutter_launcher_icons 0.13.1 (0.14.4 available)
+  flutter_lints 2.0.3 (6.0.0 available)
+  flutter_markdown 0.6.23 (0.7.7+1 available)
+  flutter_native_splash 2.4.4 (2.4.8 available)
+  flutter_plugin_android_lifecycle 2.0.26 (2.0.35 available)
+  flutter_svg 2.1.0 (2.3.0 available)
+  html 0.15.6 (0.15.7 available)
+  http_parser 4.0.2 (4.1.2 available)
+  image 4.3.0 (4.9.2 available)
+  intl 0.19.0 (0.20.3 available)
+  js 0.6.7 (0.7.2 available)
+  json_annotation 4.9.0 (4.12.0 available)
+  leak_tracker 10.0.5 (11.0.2 available)
+  leak_tracker_flutter_testing 3.0.5 (3.0.10 available)
+  leak_tracker_testing 3.0.1 (3.0.2 available)
+  lints 2.1.1 (6.1.0 available)
+  markdown 7.3.0 (7.3.1 available)
+  matcher 0.12.16+1 (0.12.20 available)
+  material_color_utilities 0.11.1 (0.13.1 available)
+  meta 1.15.0 (1.19.0 available)
+  package_info_plus 8.3.1 (10.2.1 available)
+  package_info_plus_platform_interface 3.2.1 (4.1.0 available)
+  path 1.9.0 (1.9.1 available)
+  path_provider 2.1.5 (2.1.6 available)
+  path_provider_android 2.2.15 (2.3.1 available)
+  path_provider_foundation 2.4.1 (2.6.0 available)
+  path_provider_linux 2.2.1 (2.2.2 available)
+  path_provider_platform_interface 2.1.2 (2.1.3 available)
+  petitparser 6.0.2 (7.0.2 available)
+  screen_retriever 0.1.9 (0.2.2 available)
+  sensors_plus 4.0.2 (7.1.0 available)
+  sensors_plus_platform_interface 1.2.0 (2.0.2 available)
+  serious_python 0.7.1 (4.5.1 available)
+  serious_python_android 0.7.1 (4.5.1 available)
+  serious_python_darwin 0.7.1 (4.5.1 available)
+  serious_python_linux 0.7.1 (4.5.1 available)
+  serious_python_platform_interface 0.7.1 (4.5.1 available)
+  serious_python_windows 0.7.1 (4.5.1 available)
+  shared_preferences 2.5.3 (2.5.5 available)
+  shared_preferences_android 2.4.7 (2.4.28 available)
+  shared_preferences_foundation 2.5.4 (2.5.7 available)
+  shared_preferences_platform_interface 2.4.1 (2.4.2 available)
+  source_span 1.10.0 (1.10.2 available)
+  stack_trace 1.11.1 (1.12.2 available)
+  stream_channel 2.1.2 (2.1.4 available)
+  string_scanner 1.2.0 (1.4.1 available)
+  term_glyph 1.2.1 (1.2.2 available)
+  test_api 0.7.2 (0.7.13 available)
+  toml 0.15.0 (0.18.0 available)
+  universal_io 2.2.2 (2.3.1 available)
+  url_launcher 6.3.1 (6.3.2 available)
+  url_launcher_android 6.3.14 (6.3.33 available)
+  url_launcher_ios 6.3.3 (6.4.2 available)
+  url_launcher_linux 3.2.1 (3.2.3 available)
+  url_launcher_macos 3.2.2 (3.2.6 available)
+  url_launcher_web 2.3.3 (2.4.3 available)
+  url_launcher_windows 3.1.4 (3.1.6 available)
+  url_strategy 0.2.0 (discontinued)
+  vector_graphics 1.1.18 (1.2.3 available)
+  vector_graphics_compiler 1.1.16 (1.3.0 available)
+  vector_math 2.1.4 (2.4.2 available)
+  vm_service 14.2.4 (15.3.0 available)
+  web 0.5.1 (1.1.1 available)
+  web_socket_channel 2.4.5 (3.0.3 available)
+  win32 5.10.1 (6.4.0 available)
+  window_manager 0.3.9 (0.5.2 available)
+  window_to_front 0.0.4 (1.0.0 available)
+  xml 6.5.0 (7.0.1 available)
+Got dependencies!
+1 package is discontinued.
+83 packages have newer versions incompatible with dependency constraints.
+Try `flutter pub outdated` for more information.
+
+Running Gradle task 'assembleRelease'...                        
+Running Gradle task 'assembleRelease'...                          118.2s
+
+Flutter assets will be downloaded from https://storage.flutter-io.cn. Make sure
+you trust this source!
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':serious_python_android:downloadDistArchive'.
+> de.undercouch.gradle.tasks.download.org.apache.http.NoHttpResponseException: 
+The target server failed to respond
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights.
+> Get more help at https://help.gradle.org.
+
+BUILD FAILED in 1m 57s
+Gradle task assembleRelease failed with exit code 1
+
+Error building Flet app - see the log of failed command above.

@@ -600,8 +600,8 @@ class TempMailApp:
         # 底部卡片
         _bottom_icon_path = self._get_current_app_icon()
         bottom_icon_widget = ft.Image(
-            src=_bottom_icon_path, width=48, height=48,
-            fit=ft.ImageFit.COVER, border_radius=12,
+            src=_bottom_icon_path, width=44, height=44,
+            fit=ft.ImageFit.CONTAIN,
         )
         bottom_card = ft.Container(
             content=ft.Column([
@@ -1663,7 +1663,7 @@ class TempMailApp:
         self.content.controls.append(ft.Container(height=70))
         self.content.controls.append(ft.Row([
             ft.Container(
-                content=ft.Image(src=_login_icon_path, width=64, height=64, fit=ft.ImageFit.COVER),
+                content=ft.Image(src=_login_icon_path, width=64, height=64, fit=ft.ImageFit.CONTAIN),
                 width=76, height=76,
                 bgcolor=ft.colors.with_opacity(0.08, THEME_COLOR),
                 border_radius=20,
@@ -1872,7 +1872,7 @@ class TempMailApp:
         self.content.controls.append(ft.Container(height=50))
         self.content.controls.append(ft.Row([
             ft.Container(
-                content=ft.Image(src=_reg_icon_path, width=52, height=52, fit=ft.ImageFit.COVER),
+                content=ft.Image(src=_reg_icon_path, width=52, height=52, fit=ft.ImageFit.CONTAIN),
                 width=64, height=64,
                 bgcolor=ft.colors.with_opacity(0.08, THEME_COLOR),
                 border_radius=18,

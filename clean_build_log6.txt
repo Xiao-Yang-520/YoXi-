@@ -1,0 +1,10 @@
+﻿Creating Flutter bootstrap project...OK
+Customizing app icons and splash images...OK
+Generating app icons...OK
+Generating splash screens...OK
+Packaging Python app...OK
+Building .apk for Android...OK
+Copying build to 
+C:\Users\o1415\Doubao\chats\2026-08-20\new-chat\ios-python-app\build_clean3 
+directory...OK
+Success!
