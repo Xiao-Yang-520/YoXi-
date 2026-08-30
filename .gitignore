@@ -26,3 +26,17 @@ data.json
 # OS
 .DS_Store
 Thumbs.db
+
+# 构建产物和本地文件
+build_clean/
+build_clean2/
+app_src/
+icon_check/
+icon_check2/
+flutter_build/
+build/
+*.jks
+*.apk
+*.log
+app.zip
+__pycache__/
