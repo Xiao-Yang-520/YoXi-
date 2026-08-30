@@ -623,8 +623,17 @@ class TempMailApp:
             ),
         )
 
-        # 本地背景图路径
-        local_bg_path = os.path.join(_base_dir, "assets", "app_background.jpg")
+        # 本地背景图路径（尝试多种路径，确保移动端兼容）
+        candidate_bg_paths = [
+            os.path.join(_base_dir, "assets", "app_background.jpg"),
+            os.path.join(os.getcwd(), "assets", "app_background.jpg"),
+            "assets/app_background.jpg",
+        ]
+        local_bg_path = candidate_bg_paths[0]
+        for path in candidate_bg_paths:
+            if os.path.exists(path):
+                local_bg_path = path
+                break
 
         # 底部毛玻璃卡片（进度条 + 状态文字 + 应用信息）
         # 图标用COVER填满，去掉透明边距，看起来更大
@@ -5014,9 +5023,21 @@ class TempMailApp:
         """获取当前应用图标（支持图片和emoji）"""
         icon_type = self.settings.get("app_icon_type", "image")
         if icon_type == "image":
-            # 图片图标，返回图片路径
-            local_icon_path = os.path.join(_base_dir, "assets", "cute_email_icon.png")
-            return self.settings.get("app_icon", local_icon_path)
+            # 图片图标，返回图片路径（尝试多种路径，确保移动端兼容）
+            user_icon = self.settings.get("app_icon", "")
+            if user_icon and os.path.exists(user_icon):
+                return user_icon
+            # 尝试多种默认图标路径
+            candidate_paths = [
+                os.path.join(_base_dir, "assets", "cute_email_icon.png"),
+                os.path.join(os.getcwd(), "assets", "cute_email_icon.png"),
+                "assets/cute_email_icon.png",
+            ]
+            for path in candidate_paths:
+                if os.path.exists(path):
+                    return path
+            # 如果都不存在，返回第一个候选路径
+            return candidate_paths[0]
         else:
             # emoji图标
             return self.settings.get("app_icon", "📧")
@@ -5030,10 +5051,20 @@ class TempMailApp:
         mode = self.settings.get("theme_mode", "system")
         if mode == "dark":
             # 夜间模式：黑色背景，白色邮箱
-            return os.path.join(_base_dir, "assets", "empty_email_icon_dark.png")
+            filename = "empty_email_icon_dark.png"
         else:
             # 白天模式或跟随系统（默认白天）：白色背景，黑色邮箱
-            return os.path.join(_base_dir, "assets", "empty_email_icon.png")
+            filename = "empty_email_icon.png"
+        # 尝试多种路径
+        candidate_paths = [
+            os.path.join(_base_dir, "assets", filename),
+            os.path.join(os.getcwd(), "assets", filename),
+            "assets/" + filename,
+        ]
+        for path in candidate_paths:
+            if os.path.exists(path):
+                return path
+        return candidate_paths[0]
 
     def _build_app_icon_widget(self, size=28):
         """构建应用图标组件（支持图片、emoji和自定义）"""
