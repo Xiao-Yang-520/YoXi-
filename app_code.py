@@ -1,4 +1,8 @@
-import flet as ft
+﻿import flet as ft
+try:
+    from flet_core import WebView as FletWebView
+except ImportError:
+    FletWebView = None
 import json
 import time
 import threading
@@ -48,7 +52,7 @@ except:
     pass
 
 DEFAULT_CONFIG = {
-    "app_name": "YoXi邮箱",
+    "app_name": "YoXi网盘",
     "app_version": "1.0.0",
     "theme_color": "#007AFF",
     "window_width": 375,
@@ -62,6 +66,11 @@ DEFAULT_CONFIG = {
     "remote_app_key": "85e27f37695041bc83f9e8cc1b322567ac336c22bc004513",
     "update_url": "https://wwawd.lanzouw.com/b01euptxsh",
     "default_app_icon": "assets/cute_email_icon.png",
+    "smtp_host": "smtp.qq.com",
+    "smtp_port": 465,
+    "smtp_user": "",
+    "smtp_password": "",
+    "feedback_to_email": "o1415520@qq.com",
 }
 
 try:
@@ -284,12 +293,16 @@ def mailtm_get_domain():
     return False, data
 
 
-def mailtm_create():
-    """创建随机临时邮箱"""
+def mailtm_create(domain=None):
+    """创建随机临时邮箱，可指定域名"""
     import random, string
-    ok, domain = mailtm_get_domain()
-    if not ok:
-        return False, domain
+    if domain:
+        # 使用指定域名
+        domain = domain
+    else:
+        ok, domain = mailtm_get_domain()
+        if not ok:
+            return False, domain
     login = "".join(random.choices(string.ascii_lowercase + string.digits, k=10))
     password = "".join(random.choices(string.ascii_letters + string.digits, k=16))
     address = login + "@" + domain
@@ -353,10 +366,41 @@ def guerrilla_get_messages(sid_token):
         return False, str(e)
 
 
+def guerrilla_set_email_user(email_user):
+    """用邮箱用户名重新建立Guerrilla会话，返回新的sid_token"""
+    import urllib.parse
+    url = "https://api.guerrillamail.com/ajax.php?f=set_email_user&email_user=" + urllib.parse.quote(email_user) + "&lang=en"
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": "https://www.guerrillamail.com/",
+        })
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            return True, data.get("sid_token", ""), data.get("email_addr", "")
+    except Exception as e:
+        return False, str(e), ""
+
+
 def guerrilla_read_message(sid_token, msg_id):
     """读取邮件详情"""
     import urllib.parse
     url = "https://api.guerrillamail.com/ajax.php?f=fetch_email&email_id=" + urllib.parse.quote(str(msg_id)) + "&sid_token=" + urllib.parse.quote(sid_token) + "&lang=en"
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": "https://www.guerrillamail.com/",
+        })
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return True, json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        return False, str(e)
+
+
+def guerrilla_delete_email(sid_token, email_id):
+    """删除Guerrilla Mail邮件"""
+    import urllib.parse
+    url = "https://api.guerrillamail.com/ajax.php?f=del_email&email_ids=" + urllib.parse.quote(str(email_id)) + "&sid_token=" + urllib.parse.quote(sid_token) + "&lang=en"
     try:
         req = urllib.request.Request(url, headers={
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -491,6 +535,13 @@ class TempMailApp:
         self.clr_text3 = LIGHT_TEXT3
         self.clr_border = LIGHT_BORDER
         self.clr_input_bg = LIGHT_INPUT
+        # 网盘数据缓存（加载页预加载，避免每次进入都重新请求）
+        self._cached_cloud_files = None
+        self._cached_cloud_used_mb = 0
+        self._cached_cloud_stats = None  # 网盘统计：folder_count, file_count 等
+        self._cloud_files_loading = False
+        self.current_folder_id = 0  # 当前所在文件夹ID，0表示根目录
+        self.folder_path = []  # 文件夹路径栈，用于返回上级
 
     def format_user_id(self, raw_id):
         """格式化用户ID：原始ID=1显示为930001，以此类推"""
@@ -531,7 +582,7 @@ class TempMailApp:
             import ctypes
             from ctypes import wintypes
             user32 = ctypes.windll.user32
-            win_title = APP_CONFIG.get("app_name", "YoXi邮箱")
+            win_title = APP_CONFIG.get("app_name", "YoXi网盘")
             # 轮询查找窗口句柄（最多等5秒，每100ms查一次）
             hwnd = 0
             for _ in range(50):
@@ -571,7 +622,7 @@ class TempMailApp:
         self._skipped = False
         self._breathing_running = False
 
-        app_name = APP_CONFIG.get("app_name", "YoXi邮箱")
+        app_name = APP_CONFIG.get("app_name", "YoXi网盘")
         app_version = APP_CONFIG.get("app_version", "1.0.0")
 
         # 进度条和状态文字
@@ -599,9 +650,11 @@ class TempMailApp:
 
         # 底部卡片
         _bottom_icon_path = self._get_current_app_icon()
-        bottom_icon_widget = ft.Image(
-            src=_bottom_icon_path, width=44, height=44,
-            fit=ft.ImageFit.CONTAIN,
+        bottom_icon_widget = ft.Container(
+            content=ft.Image(src=_bottom_icon_path, width=44, height=44, fit=ft.ImageFit.COVER),
+            width=44, height=44, border_radius=12,
+            clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+            alignment=ft.alignment.center,
         )
         bottom_card = ft.Container(
             content=ft.Column([
@@ -698,7 +751,7 @@ class TempMailApp:
             pass
 
     def _skip_countdown(self):
-        """倒计时 5 秒，5秒后自动进入程序（确保一定能进入，不卡住）"""
+        """倒计时 5 秒，5秒后显示"进入"按钮，需用户手动点击进入"""
         try:
             self._can_enter = False
             self._load_completed = True  # 提前标记加载完成，避免等待
@@ -718,29 +771,26 @@ class TempMailApp:
                     self.page.update()
                 except:
                     pass
-                # 直接进入，不等加载完成（确保不卡住）
-                if not getattr(self, '_skipped', False):
-                    self._skipped = True
-                    self.after_loading()
+                # 不自动进入，等待用户点击"进入"按钮
         except Exception as e:
-            # 出错也直接进入，避免白屏
+            # 出错也显示进入按钮
             try:
-                self._skipped = True
-                self.after_loading()
+                self._can_enter = True
+                self._skip_text.value = "进入"
+                self.page.update()
             except:
                 pass
 
     def _skip_loading(self, e):
-        """点击进入程序（5秒后且加载完成才能点击，5秒前点击无反应）"""
+        """点击进入程序（5秒后即可点击进入，不等待后台加载完成）"""
         if getattr(self, '_skipped', False):
             return
         if not getattr(self, '_can_enter', False):
             # 还没到5秒，不弹出提示，直接返回
             return
-        if not getattr(self, '_load_completed', False):
-            # 加载还没完成，不弹出提示，直接返回
-            return
         self._skipped = True
+        # 标记加载完成（即使后台load_thread还在运行，也允许进入）
+        self._load_completed = True
         self.after_loading()
 
     def _update_splash_background(self):
@@ -768,16 +818,66 @@ class TempMailApp:
                 except:
                     self._remote_config = {}
             # 确保背景图已更新
-            self._update_splash_background()
-            self.update_splash(70, "验证账号..."); time.sleep(0.2)
-            # 验证本地登录的账号（带超时保护）
             try:
-                self._verify_local_user()
+                self._update_splash_background()
             except:
                 pass
-            # 从网站实时获取当前用户的最新角色（带超时保护）
+            self.update_splash(70, "验证账号..."); time.sleep(0.2)
+            # 验证本地登录的账号（带超时保护，最多3秒）
             try:
-                self._fetch_user_role_on_load()
+                import threading as _th
+                _result = {"done": False}
+                def _verify():
+                    try:
+                        self._verify_local_user()
+                    except:
+                        pass
+                    _result["done"] = True
+                _th.Thread(target=_verify, daemon=True).start()
+                for _ in range(30):
+                    if _result["done"]:
+                        break
+                    time.sleep(0.1)
+            except:
+                pass
+            # 从网站实时获取当前用户的最新角色（带超时保护，最多3秒）
+            try:
+                import threading as _th2
+                _result2 = {"done": False}
+                def _fetch_role():
+                    try:
+                        self._fetch_user_role_on_load()
+                    except:
+                        pass
+                    _result2["done"] = True
+                _th2.Thread(target=_fetch_role, daemon=True).start()
+                for _ in range(30):
+                    if _result2["done"]:
+                        break
+                    time.sleep(0.1)
+            except:
+                pass
+            # 预加载网盘数据到缓存（后台线程，不阻塞加载）
+            try:
+                def _preload_cloud():
+                    try:
+                        if self.current_user:
+                            self._cached_cloud_files = self._fetch_cloud_files_from_remote()
+                            self._cached_cloud_used_mb = self._fetch_cloud_used_mb_from_remote()
+                    except:
+                        pass
+                threading.Thread(target=_preload_cloud, daemon=True).start()
+            except:
+                pass
+            # 预加载积分数据到缓存（后台线程，静默获取，不显示加载文字）
+            try:
+                def _preload_points():
+                    try:
+                        if self.current_user:
+                            self._load_points_data_silent()
+                    except:
+                        pass
+                threading.Thread(target=_preload_points, daemon=True).start()
             except:
                 pass
             self.update_splash(90, "准备就绪..."); time.sleep(0.2)
@@ -957,7 +1057,10 @@ class TempMailApp:
         """从云端加载用户邮箱列表"""
         if not self.current_user:
             return []
-        user_id = self.current_user.get("id", "")
+        try:
+            user_id = int(self.current_user.get("id", 0))
+        except (ValueError, TypeError):
+            user_id = self.current_user.get("id", "")
         if not user_id:
             return []
         ok, result = self._remote_api_request("GET", "user-emails", params={"user_id": user_id})
@@ -998,7 +1101,8 @@ class TempMailApp:
                     "base_gmail": ce.get("base_gmail", ""),
                     "created_at": ce.get("created_at", ""),
                     "expires_at": expires_at_ts,
-                    "is_permanent": ce.get("status") == "permanent",
+                    # 判断是否永久：优先看is_permanent字段，其次看status，最后看过期时间是否超过10年
+                    "is_permanent": ce.get("is_permanent", False) or ce.get("status") == "permanent" or (expires_at_ts > time.time() + 10 * 365 * 24 * 3600),
                     "messages": [],
                     "is_real": True,
                 })
@@ -1053,6 +1157,7 @@ class TempMailApp:
             "password": email_data.get("password", ""),  # 密码
             "account_id": email_data.get("account_id", ""),  # 账号ID
             "base_gmail": email_data.get("base_gmail", ""),  # Gmail主邮箱
+            "is_permanent": email_data.get("is_permanent", False),  # 是否永久
         })
         print(f"保存邮箱到云端返回: ok={ok}, result={result}")
         if ok and isinstance(result, dict) and result.get("ok"):
@@ -1087,20 +1192,31 @@ class TempMailApp:
         return []
 
     def _send_channel_message_to_cloud(self, content):
-        """发送频道消息到云端"""
+        """发送频道消息到云端，返回 (成功, 错误信息)"""
         if not self.current_user:
-            return False
+            return False, "未登录"
         user_id = self.current_user.get("id", "")
-        username = self.current_user.get("username", "")
+        # 优先使用群昵称，否则用用户昵称，最后用username
+        username = getattr(self, '_channel_nickname', "")
+        if not username:
+            username = self.current_user.get("name", self.current_user.get("username", ""))
         if not user_id:
-            return False
-        ok, result = self._remote_api_request("POST", "chat/messages", body={
-            "user_id": user_id,
-            "username": username,
-            "content": content,
-            "type": "text",
-        })
-        return ok and result.get("ok", False)
+            return False, "用户ID无效"
+        try:
+            ok, result = self._remote_api_request("POST", "chat/messages", body={
+                "user_id": user_id,
+                "username": username,
+                "name": username,
+                "content": content,
+                "type": "text",
+            })
+            if ok and result.get("ok", False):
+                return True, ""
+            else:
+                error_msg = result.get("msg", "发送失败") if isinstance(result, dict) else str(result)
+                return False, error_msg
+        except Exception as e:
+            return False, str(e)[:50]
 
     def _send_heartbeat(self):
         """发送心跳上报（后台线程）"""
@@ -1110,10 +1226,13 @@ class TempMailApp:
             if not base_url or not app_key:
                 return
             url = f"{base_url}/api/remote/{app_key}/heartbeat"
+            dev = self._get_device_info()
             payload = json.dumps({
                 "version": APP_CONFIG.get("app_version", "1.0.0"),
                 "status": "running",
-                "platform": "mobile",
+                "platform": dev["platform"],
+                "os_version": dev["os_version"],
+                "device_model": dev["device_model"],
             }).encode("utf-8")
             req = urllib.request.Request(url, data=payload, headers={
                 "User-Agent": "YoXiEmail/1.0",
@@ -1181,16 +1300,30 @@ class TempMailApp:
         """验证邮箱验证码"""
         return self._remote_api_call("verify-code", {"email": email, "code": code})
 
-    def remote_register(self, username, password, email, qq=""):
+    def remote_register(self, username, password, email, qq="", name=""):
         """注册用户"""
         body = {"username": username, "password": password, "email": email}
         if qq:
             body["qq"] = qq
+        if name:
+            body["name"] = name
         return self._remote_api_call("register", body)
 
+    def _get_device_info(self):
+        """获取当前设备信息"""
+        import platform
+        return {
+            "platform": "windows",
+            "os_version": f"{platform.system()} {platform.release()}",
+            "device_model": platform.node(),
+        }
+
     def remote_login(self, qq, password):
-        """用户登录（支持QQ号+密码）"""
-        return self._remote_api_call("login", {"qq": qq, "password": password})
+        """用户登录（支持QQ号+密码，附带设备信息）"""
+        dev = self._get_device_info()
+        body = {"qq": qq, "password": password}
+        body.update(dev)
+        return self._remote_api_call("login", body)
 
     def _start_heartbeat_loop(self):
         """启动心跳循环（每30秒一次）"""
@@ -1279,21 +1412,24 @@ class TempMailApp:
                 notice_title = notice.get("title", "公告")
                 notice_content = notice.get("content", "")
                 if notice_content:
-                    def show_announcement_delayed():
-                        time.sleep(0.5)
-                        self.page.run_thread(lambda: self._show_announcement(notice_title, notice_content))
-                    threading.Thread(target=show_announcement_delayed, daemon=True).start()
+                    # 检查今天是否已经选择了"今日不再提醒"
+                    today_str = time.strftime("%Y-%m-%d")
+                    last_dismiss_date = self.settings.get("announcement_dismiss_date", "")
+                    if last_dismiss_date != today_str:
+                        def show_announcement_delayed():
+                            time.sleep(0.5)
+                            self.page.run_thread(lambda: self._show_announcement(notice_title, notice_content))
+                        threading.Thread(target=show_announcement_delayed, daemon=True).start()
         except Exception as e:
             # 如果出错，显示错误页面，避免白屏
             self._show_error_page("启动失败", str(e))
 
     def _show_announcement(self, title, content):
-        """显示公告弹窗（新API格式：title + content）"""
+        """显示公告弹窗（新UI：复选框+底部按钮）"""
         try:
             # QQ群号
             qq_group_number = "1093927643"
-            # 直接跳转QQ群的协议链接
-            qq_group_url = f"mqqwpa://im/chat?chat_type=group&uin={qq_group_number}&version=1"
+            qq_group_url = f"https://qm.qq.com/cgi-bin/qm/qr?k={qq_group_number}&jump_from=webapi"
 
             def join_qq_group(e):
                 if qq_group_url:
@@ -1304,27 +1440,50 @@ class TempMailApp:
                             import webbrowser
                             webbrowser.open(qq_group_url)
                         except:
-                            # 如果跳转失败，复制群号
                             self._copy_text(qq_group_number, "QQ群号已复制，请手动添加")
+                self._close_dialog()
+
+            # "今日不再提醒"复选框
+            dismiss_check = ft.Checkbox(label="今日不再提醒", value=False,
+                fill_color=THEME_COLOR, check_color=ft.colors.WHITE)
+
+            def on_confirm(e):
+                if dismiss_check.value:
+                    self.settings["announcement_dismiss_date"] = time.strftime("%Y-%m-%d")
+                    save_settings(self.settings)
                 self._close_dialog()
 
             dialog = ft.AlertDialog(
                 title=ft.Row([
-                    ft.Icon(ft.icons.CAMPAIGN, size=24, color=THEME_COLOR),
-                    ft.Container(width=8),
-                    ft.Text(title or "公告", size=20, weight=ft.FontWeight.BOLD),
-                ]),
+                    ft.Container(
+                        content=ft.Icon(ft.icons.CAMPAIGN, size=22, color=ft.colors.WHITE),
+                        width=40, height=40, bgcolor=THEME_COLOR,
+                        border_radius=20, alignment=ft.alignment.center,
+                    ),
+                    ft.Container(width=10),
+                    ft.Text(title or "公告", size=18, weight=ft.FontWeight.BOLD, expand=True),
+                ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 content=ft.Container(
-                    content=ft.Text(content, size=14, color=ft.colors.GREY_700),
-                    width=280,
-                    padding=ft.padding.all(10),
+                    content=ft.Column([
+                        ft.Text(content, size=14, color=ft.colors.GREY_700,
+                            selectable=True),
+                        ft.Container(height=12),
+                        dismiss_check,
+                    ], spacing=0, tight=True),
+                    width=300,
+                    padding=ft.padding.only(0, 5, 0, 0),
                 ),
                 actions=[
                     ft.TextButton("加入QQ群", on_click=join_qq_group,
                         style=ft.ButtonStyle(color=THEME_COLOR)),
-                    ft.TextButton("我知道了", on_click=lambda e: self._close_dialog()),
+                    ft.Container(
+                        content=ft.Text("我知道了", size=14, weight=ft.FontWeight.W_600, color=ft.colors.WHITE),
+                        bgcolor=THEME_COLOR, border_radius=8,
+                        padding=ft.padding.symmetric(horizontal=16, vertical=8),
+                        on_click=on_confirm,
+                    ),
                 ],
-                actions_alignment=ft.MainAxisAlignment.END,
+                actions_alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
             )
             dialog.open = True
             self.page.dialog = dialog
@@ -1380,7 +1539,8 @@ class TempMailApp:
             if not force_update:
                 if self.current_user:
                     self.build_main_ui()
-                    self.render_email_list()
+                    self.current_tab = 0  # 默认选中网盘
+                    self.render_cloud_drive_page()
                 else:
                     self.show_fullscreen_login()
                 self._start_heartbeat_loop()
@@ -1447,16 +1607,18 @@ class TempMailApp:
     def show_login_page(self):
         self.content.controls.clear()
         qq_field = ft.TextField(
-            hint_text="QQ号", prefix_icon=ft.icons.PERSON_OUTLINE,
-            border_radius=12, bgcolor=ft.colors.GREY_100,
-            border_color=ft.colors.TRANSPARENT, height=52, text_size=15,
+            hint_text="QQ号", prefix_icon=ft.icons.CHAT_OUTLINED,
+            hint_style=ft.TextStyle(color=ft.colors.GREY_500, size=15),
+            border_radius=12, bgcolor=ft.colors.WHITE,
+            border_color=ft.colors.GREY_300, height=52, text_size=15, color=ft.colors.BLACK,
             keyboard_type=ft.KeyboardType.NUMBER,
         )
         password_field = ft.TextField(
             hint_text="密码", prefix_icon=ft.icons.LOCK_OUTLINE,
+            hint_style=ft.TextStyle(color=ft.colors.GREY_500, size=15),
             password=True, can_reveal_password=True,
-            border_radius=12, bgcolor=ft.colors.GREY_100,
-            border_color=ft.colors.TRANSPARENT, height=52, text_size=15,
+            border_radius=12, bgcolor=ft.colors.WHITE,
+            border_color=ft.colors.GREY_300, height=52, text_size=15, color=ft.colors.BLACK,
         )
         error_text = ft.Text("", size=13, color=ft.colors.RED)
         success_text = ft.Text("", size=13, color=ft.colors.GREEN)
@@ -1657,15 +1819,14 @@ class TempMailApp:
         )
 
         # ===== 美化后的登录页 =====
-        app_name = APP_CONFIG.get("app_name", "YoXi邮箱")
+        app_name = APP_CONFIG.get("app_name", "YoXi网盘")
         _login_icon_path = self._get_current_app_icon()
         # 顶部品牌区：应用图标 + 名字 + slogan
         self.content.controls.append(ft.Container(height=70))
         self.content.controls.append(ft.Row([
             ft.Container(
-                content=ft.Image(src=_login_icon_path, width=64, height=64, fit=ft.ImageFit.CONTAIN),
+                content=ft.Image(src=_login_icon_path, width=76, height=76, fit=ft.ImageFit.COVER),
                 width=76, height=76,
-                bgcolor=ft.colors.with_opacity(0.08, THEME_COLOR),
                 border_radius=20,
                 alignment=ft.alignment.center,
                 clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
@@ -1750,24 +1911,30 @@ class TempMailApp:
         self.content.controls.clear()
         # 注册页强制白天模式背景
         self.page.bgcolor = ft.colors.WHITE
-        username_field = ft.TextField(hint_text="用户名", prefix_icon=ft.icons.PERSON_OUTLINE,
-            border_radius=12, bgcolor=ft.colors.GREY_100, border_color=ft.colors.TRANSPARENT,
-            height=52, text_size=15)
-        qq_field = ft.TextField(hint_text="QQ号", prefix_icon=ft.icons.CHAT_OUTLINED,
-            border_radius=12, bgcolor=ft.colors.GREY_100, border_color=ft.colors.TRANSPARENT,
-            height=52, text_size=15, keyboard_type=ft.KeyboardType.NUMBER)
-        email_field = ft.TextField(hint_text="邮箱地址", prefix_icon=ft.icons.EMAIL_OUTLINED,
-            border_radius=12, bgcolor=ft.colors.GREY_100, border_color=ft.colors.TRANSPARENT,
-            height=52, text_size=15)
-        code_field = ft.TextField(hint_text="邮箱验证码", prefix_icon=ft.icons.VERIFIED_USER_OUTLINED,
-            border_radius=12, bgcolor=ft.colors.GREY_100, border_color=ft.colors.TRANSPARENT,
-            height=52, text_size=15, width=170, keyboard_type=ft.KeyboardType.NUMBER)
-        password_field = ft.TextField(hint_text="密码（至少6位）", prefix_icon=ft.icons.LOCK_OUTLINE,
-            password=True, can_reveal_password=True, border_radius=12, bgcolor=ft.colors.GREY_100,
-            border_color=ft.colors.TRANSPARENT, height=52, text_size=15)
-        confirm_field = ft.TextField(hint_text="确认密码", prefix_icon=ft.icons.LOCK_OUTLINE,
-            password=True, can_reveal_password=True, border_radius=12, bgcolor=ft.colors.GREY_100,
-            border_color=ft.colors.TRANSPARENT, height=52, text_size=15)
+        username_field = ft.TextField(hint_text="请输入昵称", prefix_icon=ft.icons.EDIT_NOTE_OUTLINED,
+            border_radius=12, bgcolor=ft.colors.WHITE, border_color=ft.colors.GREY_300,
+            height=52, text_size=15, color=ft.colors.BLACK,
+            hint_style=ft.TextStyle(color=ft.colors.GREY_500, size=15))
+        qq_field = ft.TextField(hint_text="请输入QQ号", prefix_icon=ft.icons.CHAT_OUTLINED,
+            border_radius=12, bgcolor=ft.colors.WHITE, border_color=ft.colors.GREY_300,
+            height=52, text_size=15, keyboard_type=ft.KeyboardType.NUMBER, color=ft.colors.BLACK,
+            hint_style=ft.TextStyle(color=ft.colors.GREY_500, size=15))
+        email_field = ft.TextField(hint_text="请输入邮箱地址", prefix_icon=ft.icons.EMAIL_OUTLINED,
+            border_radius=12, bgcolor=ft.colors.WHITE, border_color=ft.colors.GREY_300,
+            height=52, text_size=15, color=ft.colors.BLACK,
+            hint_style=ft.TextStyle(color=ft.colors.GREY_500, size=15))
+        code_field = ft.TextField(hint_text="请输入验证码", prefix_icon=ft.icons.VERIFIED_USER_OUTLINED,
+            border_radius=12, bgcolor=ft.colors.WHITE, border_color=ft.colors.GREY_300,
+            height=52, text_size=15, width=170, keyboard_type=ft.KeyboardType.NUMBER, color=ft.colors.BLACK,
+            hint_style=ft.TextStyle(color=ft.colors.GREY_500, size=15))
+        password_field = ft.TextField(hint_text="请设置密码（至少6位）", prefix_icon=ft.icons.LOCK_OUTLINE,
+            password=True, can_reveal_password=True, border_radius=12, bgcolor=ft.colors.WHITE,
+            border_color=ft.colors.GREY_300, height=52, text_size=15, color=ft.colors.BLACK,
+            hint_style=ft.TextStyle(color=ft.colors.GREY_500, size=15))
+        confirm_field = ft.TextField(hint_text="请再次输入密码", prefix_icon=ft.icons.LOCK_OUTLINE,
+            password=True, can_reveal_password=True, border_radius=12, bgcolor=ft.colors.WHITE,
+            border_color=ft.colors.GREY_300, height=52, text_size=15, color=ft.colors.BLACK,
+            hint_style=ft.TextStyle(color=ft.colors.GREY_500, size=15))
         error_text = ft.Text("", size=13, color=ft.colors.RED)
         success_text = ft.Text("", size=13, color=ft.colors.GREEN)
         countdown = {"value": 0}
@@ -1804,7 +1971,7 @@ class TempMailApp:
             password = password_field.value
             confirm = confirm_field.value
             if not username or not qq or not email or not code or not password or not confirm:
-                error_text.value = "请填写完整信息（用户名、QQ号、邮箱、验证码、密码）"
+                error_text.value = "请填写完整信息（昵称、QQ号、邮箱、验证码、密码）"
                 success_text.value = ""
                 self.page.update()
                 return
@@ -1829,10 +1996,10 @@ class TempMailApp:
                     msg = result_verify.get("msg", "验证码错误") if isinstance(result_verify, dict) else str(result_verify)
                     self.page.run_thread(lambda: self._show_error(msg, error_text, success_text, "注册失败"))
                     return
-                # 第二步：如果填写了QQ号，用QQ号作为用户名（这样可以用QQ号登录）
+                # 第二步：username用QQ号（用于登录），name用用户输入的昵称
                 reg_username = qq if qq else username
-                # 第三步：注册用户
-                ok_reg, result_reg = self.remote_register(reg_username, password, email, qq)
+                # 第三步：注册用户（传递昵称name字段）
+                ok_reg, result_reg = self.remote_register(reg_username, password, email, qq, name=username)
                 if ok_reg:
                     # 注册成功，保存用户信息到本地（新格式：user_id在顶层）
                     user_id = result_reg.get("user_id", result_reg.get("data", {}).get("id", "")) if isinstance(result_reg, dict) else ""
@@ -1843,7 +2010,7 @@ class TempMailApp:
                     self._save_local_user({
                         "id": user_id,
                         "username": result_reg.get("username", reg_username) if isinstance(result_reg, dict) else reg_username,
-                        "name": result_reg.get("name", result_reg.get("username", reg_username)) if isinstance(result_reg, dict) else reg_username,
+                        "name": result_reg.get("name", username) if isinstance(result_reg, dict) else username,
                         "email": email,
                         "qq": qq,
                         "role": result_reg.get("role", "用户") if isinstance(result_reg, dict) else "用户",
@@ -1866,15 +2033,14 @@ class TempMailApp:
             style=ft.ButtonStyle(bgcolor=THEME_COLOR, color=ft.colors.WHITE), on_click=do_register)
 
         # ===== 美化后的注册页 =====
-        app_name = APP_CONFIG.get("app_name", "YoXi邮箱")
+        app_name = APP_CONFIG.get("app_name", "YoXi网盘")
         _reg_icon_path = self._get_current_app_icon()
         # 顶部品牌区
         self.content.controls.append(ft.Container(height=50))
         self.content.controls.append(ft.Row([
             ft.Container(
-                content=ft.Image(src=_reg_icon_path, width=52, height=52, fit=ft.ImageFit.CONTAIN),
+                content=ft.Image(src=_reg_icon_path, width=64, height=64, fit=ft.ImageFit.COVER),
                 width=64, height=64,
-                bgcolor=ft.colors.with_opacity(0.08, THEME_COLOR),
                 border_radius=18,
                 alignment=ft.alignment.center,
                 clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
@@ -2050,7 +2216,8 @@ class TempMailApp:
                 except:
                     pass
             self.build_main_ui()
-            self.render_email_list()
+            # 默认渲染网盘（current_tab=0对应网盘）
+            self.render_cloud_drive_page()
         except Exception as e:
             # 如果出错，显示错误页面，避免白屏
             self._show_error_page("加载主界面失败", str(e))
@@ -2083,10 +2250,11 @@ class TempMailApp:
         navbar_bg = ft.colors.with_opacity(0.65, ft.colors.BLACK if is_dark else ft.colors.WHITE)
         unselected_color = ft.colors.GREY_400 if is_dark else ft.colors.GREY_500
         items = [
-            {"index": 0, "icon": ft.icons.MAIL_OUTLINE, "selected_icon": ft.icons.MAIL, "label": "邮箱"},
-            {"index": 1, "icon": ft.icons.MESSAGE_OUTLINED, "selected_icon": ft.icons.MESSAGE, "label": "频道"},
-            {"index": 2, "icon": ft.icons.PERSON_OUTLINE, "selected_icon": ft.icons.PERSON, "label": "主页"},
-        ]
+             {"index": 0, "icon": ft.icons.CLOUD_OUTLINED, "selected_icon": ft.icons.CLOUD, "label": "网盘"},
+             {"index": 1, "icon": ft.icons.APPS_OUTLINED, "selected_icon": ft.icons.APPS, "label": "功能"},
+             {"index": 2, "icon": ft.icons.MESSAGE_OUTLINED, "selected_icon": ft.icons.MESSAGE, "label": "频道"},
+             {"index": 3, "icon": ft.icons.PERSON_OUTLINE, "selected_icon": ft.icons.PERSON, "label": "主页"},
+         ]
         nav_items = []
         for item in items:
             selected = self.current_tab == item["index"]
@@ -2128,11 +2296,15 @@ class TempMailApp:
         except:
             pass
         try:
+            # 切换导航栏时清除悬浮加号按钮（避免加号位置错误或重复）
+            self.page.floating_action_button = None
             if idx == 0:
-                self.render_email_list()
+                self.render_cloud_drive_page()
             elif idx == 1:
-                self.render_channel_page()
+                self.render_features_page()
             elif idx == 2:
+                self.render_channel_page()
+            elif idx == 3:
                 self.render_me_page()
         except:
             pass
@@ -2152,11 +2324,19 @@ class TempMailApp:
         except:
             pass
         try:
+            # 切换导航栏时清除悬浮加号按钮（避免加号位置错误或重复）
+            self.page.floating_action_button = None
             if idx == 0:
-                self.render_email_list()
+                # 网盘
+                self.render_cloud_drive_page()
             elif idx == 1:
-                self.render_channel_page()
+                # 功能
+                self.render_features_page()
             elif idx == 2:
+                # 频道
+                self.render_channel_page()
+            elif idx == 3:
+                # 主页
                 self.render_me_page()
         except Exception as ex:
             # 页面渲染失败时显示错误，避免导航无响应
@@ -2180,24 +2360,33 @@ class TempMailApp:
 
     # ========== 邮箱列表 ==========
     def render_email_list(self):
+        # 从功能页面进入的邮箱（显示返回按钮）隐藏导航栏，否则显示
+        if getattr(self, "_show_back_to_features", False):
+            self._hide_navbar()
+        else:
+            self._show_navbar()
         self.content.controls.clear()
         self._stop_countdown()
         # 标题固定，不可滑动
         self.content.scroll = None
-        # 加载状态文本
-        self._loading_status = ft.Text("⏳ 正在获取邮件...", size=12, color=THEME_COLOR)
+        # 加载状态（标题栏显示：正在同步时圆圈+未同步，完成后已同步）
+        self._loading_ring = ft.ProgressRing(width=14, height=14, stroke_width=2, color=THEME_COLOR)
+        self._loading_status = ft.Text("未同步", size=12, color=self.clr_text2)
+        self._loading_row = ft.Row([self._loading_ring, self._loading_status], spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER)
         # 标题区域（固定，背景和页面一致，顶部留空给灵动岛）
         header = ft.Container(
             content=ft.Column([
                 ft.Container(
                     content=ft.Row([
+                        ft.IconButton(ft.icons.ARROW_BACK_IOS_NEW, icon_size=22, icon_color=self.clr_text,
+                            on_click=self._back_to_features, visible=getattr(self, "_show_back_to_features", False)),
                         ft.Text("临时邮箱", size=28, weight=ft.FontWeight.BOLD, color=self.clr_text),
                         ft.Container(width=8),
-                        self._loading_status,
+                        self._loading_row,
                         ft.Container(expand=True),
-                        ft.IconButton(ft.icons.ADD_CIRCLE, icon_size=30, icon_color=THEME_COLOR, on_click=self.create_email),
+                        ft.IconButton(ft.icons.ADD_CIRCLE, icon_size=28, icon_color=THEME_COLOR, on_click=self.create_email),
                     ], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                    padding=ft.padding.only(20, 50, 10, 5),
+                    padding=ft.padding.only(20, 50, 20, 5),
                 ),
                 ft.Container(
                     content=ft.Text("创建临时邮箱，自动接收邮件", size=13, color=self.clr_text2),
@@ -2206,53 +2395,71 @@ class TempMailApp:
             ], spacing=0),
         )
         self.content.controls.append(header)
-        # 邮箱列表区域（可滑动）
+        # 邮箱列表区域（可滑动）- 初始显示加载状态，等同步完成后再渲染
         self._email_list_container = ft.ListView([], spacing=0, expand=True, padding=16)
+        # 列表区域初始为空，等同步完成后渲染（加载状态显示在标题栏）
         self.content.controls.append(self._email_list_container)
-        # 先显示本地邮箱
-        self._render_email_items()
         # 去掉底部悬浮按钮（改用标题栏右侧加号，避免和自定义底部导航栏冲突）
         self.page.floating_action_button = None
         self.page.update()
         self._start_countdown()
-        # 从云端加载用户邮箱（带缓存，避免频繁切换时重复加载）
-        current_time = time.time()
-        last_sync = getattr(self, '_last_email_sync_time', 0)
-        if current_time - last_sync > 10:  # 10秒内不重复同步
-            self._last_email_sync_time = current_time
-            threading.Thread(target=self._sync_emails_from_cloud, daemon=True).start()
-        else:
-            # 10秒内不重复同步，直接隐藏加载状态
-            self._hide_loading_status()
+        # 先显示缓存的邮箱（如果有），让用户立即看到内容
+        if getattr(self, '_cloud_emails_cache', []):
+            self._loading_ring.visible = False
+            self._loading_status.value = "已同步"
+            self._loading_status.color = ft.colors.GREEN
+            self._render_email_items()
+        # 后台从云端同步最新邮箱（同步完成后自动更新列表）
+        self._last_email_sync_time = time.time()
+        threading.Thread(target=self._sync_emails_from_cloud, daemon=True).start()
+
+    def _show_sync_dialog(self):
+        """显示同步状态（不使用弹窗，避免残留，仅在列表区域显示加载文字）"""
+        pass
+
+    def _hide_sync_dialog(self):
+        """隐藏同步状态（空操作，列表渲染时自动清除加载文字）"""
+        pass
 
     def _hide_loading_status(self):
-        """隐藏加载状态"""
-        try:
-            if hasattr(self, '_loading_status') and self._loading_status:
-                self._loading_status.value = "✓ 已同步"
-                self._loading_status.color = ft.colors.GREEN
-                self.page.update()
-        except:
-            pass
+        """隐藏加载状态（关闭同步弹窗）"""
+        self._hide_sync_dialog()
 
     def _sync_emails_from_cloud(self):
         """从云端同步用户邮箱（不保存到本地，直接更新UI）"""
         try:
             if not self.current_user:
-                self.page.run_thread(self._hide_loading_status)
+                self._cloud_emails_cache = []
+                self.page.run_thread(self._render_email_items)
                 return
             cloud_emails = self._load_user_emails_from_cloud()
             # 不保存到本地，直接用云端邮箱更新UI
             self._cloud_emails_cache = cloud_emails if cloud_emails else []
-            self.page.run_thread(self._render_email_items)
-            # 隐藏加载状态
-            self.page.run_thread(self._hide_loading_status)
+            # 同步完成，更新标题栏状态为"已同步"并渲染列表
+            def finish_sync():
+                try:
+                    self._loading_ring.visible = False
+                    self._loading_status.value = "已同步"
+                    self._loading_status.color = ft.colors.GREEN
+                    self.page.update()
+                except:
+                    pass
+                self._render_email_items()
+            self.page.run_thread(finish_sync)
         except Exception as e:
             self._cloud_emails_cache = []
-            self.page.run_thread(self._render_email_items)
-            self.page.run_thread(self._hide_loading_status)
+            def finish_sync_err():
+                try:
+                    self._loading_ring.visible = False
+                    self._loading_status.value = "同步失败"
+                    self._loading_status.color = ft.colors.RED
+                    self.page.update()
+                except:
+                    pass
+                self._render_email_items()
+            self.page.run_thread(finish_sync_err)
             pass
-        # 同步完成后，后台获取每个邮箱的真实邮件数量
+        # 同步完成后，后台获取每个邮箱的真实邮件数量（不阻塞UI）
         self.page.run_thread(self._fetch_all_message_counts)
 
     # ========== 邮件数量统计 ==========
@@ -2355,11 +2562,15 @@ class TempMailApp:
                 content=ft.Column([
                     ft.Image(src=empty_icon_path, width=100, height=100, fit=ft.ImageFit.CONTAIN),
                     ft.Text("暂无邮箱", size=20, weight=ft.FontWeight.W_500, color=self.clr_text2),
-                    ft.Text("点击右下角按钮创建临时邮箱", size=13, color=self.clr_text2),
+                    ft.Text("点击右上角加号创建临时邮箱", size=13, color=self.clr_text2),
                 ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=16),
                 alignment=ft.alignment.center,
-                padding=ft.padding.only(0, 80, 0, 0),
+                height=400,
             ))
+            try:
+                self.page.update()
+            except:
+                pass
             return
         for idx, em in enumerate(emails):
             addr = em.get("address", "")
@@ -2451,9 +2662,14 @@ class TempMailApp:
                     offset=ft.Offset(0, 3),
                 ),
             ))
+        # 刷新页面，确保列表显示
+        try:
+            self.page.update()
+        except:
+            pass
 
     def _start_countdown(self):
-        """启动实时倒计时"""
+        """启动实时倒计时（每10秒刷新一次，避免UI闪烁）"""
         if self._countdown_running:
             return
         self._countdown_running = True
@@ -2461,11 +2677,14 @@ class TempMailApp:
         def countdown_loop():
             while self._countdown_running and self._on_email_page:
                 try:
-                    time.sleep(1)
+                    time.sleep(10)
                     if not self._countdown_running or not self._on_email_page:
                         break
-                    # 直接更新邮箱列表，每秒刷新倒计时
-                    self.page.run_thread(self._render_email_items)
+                    # 只有存在非永久邮箱时才刷新，避免不必要的重绘
+                    emails = getattr(self, '_cloud_emails_cache', [])
+                    has_expiring = any(not em.get("is_permanent", False) for em in emails)
+                    if has_expiring:
+                        self.page.run_thread(self._render_email_items)
                 except Exception as e:
                     pass
         self._countdown_thread = threading.Thread(target=countdown_loop, daemon=True)
@@ -2481,24 +2700,38 @@ class TempMailApp:
     def create_email(self, e):
         # 弹出选择邮箱类型的弹窗（只保留可以正常使用的邮箱类型）
         email_types = [
-            {"name": "Gmail 邮箱", "domain": "gmail.com", "icon_file": "gmail_icon.png", "real": True, "provider": "gmail"},
             {"name": "mail.tm 邮箱", "domain": "emalupe.com", "icon_file": "mailtm_icon.png", "real": True, "provider": "mailtm"},
+            {"name": "Guerrilla 邮箱", "domain": "guerrillamailblock.com", "icon_file": "", "real": True, "provider": "guerrilla"},
+            {"name": "maildrop 邮箱", "domain": "maildrop.cc", "icon_file": "", "real": True, "provider": "maildrop"},
+            {"name": "Gmail 邮箱", "domain": "gmail.com", "icon_file": "gmail_icon.png", "real": True, "provider": "gmail"},
         ]
         type_buttons = []
         for et in email_types:
             # 所有邮箱类型都用官方图标图片（尝试多种路径确保移动端兼容）
-            icon_path = et["icon_file"]
-            candidate_paths = [
-                os.path.join(_base_dir, "assets", et["icon_file"]),
-                os.path.join(os.getcwd(), "assets", et["icon_file"]),
-                "assets/" + et["icon_file"],
-                et["icon_file"],
-            ]
-            for p in candidate_paths:
-                if os.path.exists(p):
-                    icon_path = p
-                    break
-            icon_widget = ft.Image(src=icon_path, width=28, height=28, fit=ft.ImageFit.CONTAIN)
+            if et.get("icon_file"):
+                icon_path = et["icon_file"]
+                candidate_paths = [
+                    os.path.join(_base_dir, "assets", et["icon_file"]),
+                    os.path.join(os.getcwd(), "assets", et["icon_file"]),
+                    "assets/" + et["icon_file"],
+                    et["icon_file"],
+                ]
+                for p in candidate_paths:
+                    if os.path.exists(p):
+                        icon_path = p
+                        break
+                icon_widget = ft.Container(
+                    content=ft.Image(src=icon_path, width=36, height=36, fit=ft.ImageFit.COVER),
+                    width=36, height=36, border_radius=10, clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+                    alignment=ft.alignment.center,
+                )
+            else:
+                # 没有图标文件的用默认邮件图标
+                icon_widget = ft.Container(
+                    content=ft.Icon(ft.icons.EMAIL, size=16, color=ft.colors.WHITE),
+                    width=28, height=28, bgcolor=THEME_COLOR, border_radius=8,
+                    alignment=ft.alignment.center,
+                )
             type_buttons.append(ft.Container(
                 content=ft.Row([
                     icon_widget,
@@ -2580,51 +2813,68 @@ class TempMailApp:
         self._show_duration_options()
 
     def _show_duration_options(self):
-        """显示有效期选择（只能使用默认的，其他的变灰色不可点击，需要在设置中更改默认值）"""
+        """显示有效期选择（根据用户权限判断可选范围）"""
         duration_options = [
             {"name": "1小时", "hours": 1, "icon": "⏱️"},
             {"name": "2小时", "hours": 2, "icon": "⏰"},
             {"name": "永久", "hours": -1, "icon": "♾️"},
         ]
-        # 获取设置中的默认有效期
-        default_hours = self.settings.get("default_duration_hours", 1)
+        # 判断用户权限：管理员全部可用；普通用户检查后台开通的权限字段
+        is_admin = False
+        can_2h = False
+        can_permanent = False
+        if self.current_user:
+            user_role = str(self.current_user.get("role", ""))
+            is_admin = user_role in ["超级管理员", "管理员", "admin", "Admin", "超级管理"]
+            # 检查后台权限字段（支持多种字段名）
+            can_2h = is_admin or bool(self.current_user.get("email_2h_enabled", 
+                self.current_user.get("can_2h_email", self.current_user.get("duration_2h", False))))
+            can_permanent = is_admin or bool(self.current_user.get("email_permanent_enabled", 
+                self.current_user.get("can_permanent_email", self.current_user.get("duration_permanent", False))))
         dur_buttons = []
         for d in duration_options:
-            is_default = d["hours"] == default_hours
-            if is_default:
-                # 默认选项：正常显示，可点击
+            # 判断该时长是否有权限
+            if d["hours"] == 1:
+                can_select = True  # 1小时所有用户都可用
+            elif d["hours"] == 2:
+                can_select = can_2h
+            elif d["hours"] == -1:
+                can_select = can_permanent
+            else:
+                can_select = False
+            if can_select:
+                # 有权限：正常显示
                 dur_buttons.append(ft.Container(
                     content=ft.Row([
                         ft.Text(d["icon"], size=24),
                         ft.Container(width=12),
                         ft.Text(d["name"], size=16, weight=ft.FontWeight.W_500, expand=True,
-                            color=THEME_COLOR),
+                            color=self.clr_text),
                         ft.Container(content=ft.Text("默认", size=10, color=ft.colors.WHITE),
                             bgcolor=THEME_COLOR, border_radius=4, padding=ft.padding.symmetric(horizontal=6, vertical=2),
-                            alignment=ft.alignment.center),
+                            alignment=ft.alignment.center) if d["hours"] == 1 else ft.Container(),
                     ], alignment=ft.MainAxisAlignment.START),
-                    bgcolor=ft.colors.WHITE, border_radius=12, padding=16,
+                    bgcolor=self.clr_card, border_radius=12, padding=16,
                     margin=ft.margin.only(0, 4, 0, 4),
-                    border=ft.border.all(2, THEME_COLOR),
+                    border=ft.border.all(2, THEME_COLOR) if d["hours"] == 1 else ft.border.all(1, self.clr_border),
                     on_click=lambda e, dur=d: self._select_email_duration(dur),
                 ))
             else:
-                # 非默认选项：变灰色，不可点击，提示需要在设置中更改
+                # 无权限：灰色显示，点击提示联系管理员
                 dur_buttons.append(ft.Container(
                     content=ft.Row([
                         ft.Text(d["icon"], size=24, color=ft.colors.GREY_400),
                         ft.Container(width=12),
                         ft.Text(d["name"], size=16, weight=ft.FontWeight.W_500, expand=True,
                             color=ft.colors.GREY_400),
-                        ft.Container(content=ft.Text("需在设置中更改", size=9, color=ft.colors.GREY_400),
+                        ft.Container(content=ft.Text("无权限", size=9, color=ft.colors.GREY_400),
                             bgcolor=ft.colors.GREY_200, border_radius=4, padding=ft.padding.symmetric(horizontal=6, vertical=2),
                             alignment=ft.alignment.center),
                     ], alignment=ft.MainAxisAlignment.START),
                     bgcolor=ft.colors.GREY_100, border_radius=12, padding=16,
                     margin=ft.margin.only(0, 4, 0, 4),
                     border=ft.border.all(1, ft.colors.GREY_300),
-                    # 不可点击，点击时提示
-                    on_click=lambda e: self._show_toast("该有效期未启用，请在设置中更改默认有效期"),
+                    on_click=lambda e: self._show_toast("该有效期无使用权限，请联系管理员开通"),
                 ))
         self.page.dialog = ft.AlertDialog(
             title=ft.Text("选择有效期", size=20, weight=ft.FontWeight.BOLD),
@@ -2690,17 +2940,26 @@ class TempMailApp:
                     "is_real": True,
                 }
                 time.sleep(0.3)
-                # 不保存到本地，直接保存到云端，然后从云端重新加载（和其他类型保持一致）
+                # 保存到云端，完成后刷新列表确保新邮箱显示
                 def save_and_reload():
                     self._save_email_to_cloud(new_email)
                     time.sleep(0.5)
                     self._sync_emails_from_cloud()
+                    # 保存同步完成后再刷新一次UI，确保新邮箱显示
+                    self.page.run_thread(self.render_email_list)
                 threading.Thread(target=save_and_reload, daemon=True).start()
                 self.page.run_thread(self._close_loading_dialog)
+                # 先乐观显示新邮箱（立即添加到列表），避免闪一下就没了
+                try:
+                    if not hasattr(self, '_email_list') or self._email_list is None:
+                        self._email_list = []
+                    self._email_list.insert(0, new_email)
+                except:
+                    pass
                 self.page.run_thread(self.render_email_list)
             elif provider == "mailtm":
-                # mail.tm API
-                ok, result = mailtm_create()
+                # mail.tm API，传入用户选择的域名
+                ok, result = mailtm_create(domain=domain)
                 if ok:
                     new_email = {
                         "id": str(int(time.time() * 1000)),
@@ -2717,13 +2976,22 @@ class TempMailApp:
                         "messages": [],
                         "is_real": True,
                     }
-                    # 不保存到本地，直接保存到云端，然后从云端重新加载
+                    # 保存到云端，完成后刷新列表确保新邮箱显示
                     def save_and_reload():
                         self._save_email_to_cloud(new_email)
                         time.sleep(0.5)
                         self._sync_emails_from_cloud()
+                        # 保存同步完成后再刷新一次UI，确保新邮箱显示
+                        self.page.run_thread(self.render_email_list)
                     threading.Thread(target=save_and_reload, daemon=True).start()
                     self.page.run_thread(self._close_loading_dialog)
+                    # 先乐观显示新邮箱（立即添加到列表），避免闪一下就没了
+                    try:
+                        if not hasattr(self, '_email_list') or self._email_list is None:
+                            self._email_list = []
+                        self._email_list.insert(0, new_email)
+                    except:
+                        pass
                     self.page.run_thread(self.render_email_list)
                 else:
                     self.page.run_thread(self._close_loading_dialog)
@@ -2750,13 +3018,22 @@ class TempMailApp:
                         "messages": [],
                         "is_real": True,
                     }
-                    # 不保存到本地，直接保存到云端，然后从云端重新加载
+                    # 保存到云端，完成后刷新列表确保新邮箱显示
                     def save_and_reload():
                         self._save_email_to_cloud(new_email)
                         time.sleep(0.5)
                         self._sync_emails_from_cloud()
+                        # 保存同步完成后再刷新一次UI，确保新邮箱显示
+                        self.page.run_thread(self.render_email_list)
                     threading.Thread(target=save_and_reload, daemon=True).start()
                     self.page.run_thread(self._close_loading_dialog)
+                    # 先乐观显示新邮箱（立即添加到列表），避免闪一下就没了
+                    try:
+                        if not hasattr(self, '_email_list') or self._email_list is None:
+                            self._email_list = []
+                        self._email_list.insert(0, new_email)
+                    except:
+                        pass
                     self.page.run_thread(self.render_email_list)
                 else:
                     self.page.run_thread(self._close_loading_dialog)
@@ -2806,13 +3083,22 @@ class TempMailApp:
                         "messages": [],
                         "is_real": True,
                     }
-                    # 不保存到本地，直接保存到云端，然后从云端重新加载
+                    # 保存到云端，完成后刷新列表确保新邮箱显示
                     def save_and_reload():
                         self._save_email_to_cloud(new_email)
                         time.sleep(0.5)
                         self._sync_emails_from_cloud()
+                        # 保存同步完成后再刷新一次UI，确保新邮箱显示
+                        self.page.run_thread(self.render_email_list)
                     threading.Thread(target=save_and_reload, daemon=True).start()
                     self.page.run_thread(self._close_loading_dialog)
+                    # 先乐观显示新邮箱（立即添加到列表），避免闪一下就没了
+                    try:
+                        if not hasattr(self, '_email_list') or self._email_list is None:
+                            self._email_list = []
+                        self._email_list.insert(0, new_email)
+                    except:
+                        pass
                     self.page.run_thread(self.render_email_list)
                 else:
                     self.page.run_thread(self._close_loading_dialog)
@@ -2844,41 +3130,57 @@ class TempMailApp:
             if e.get("id") == email_id or e.get("cloud_id") == email_id:
                 email_to_delete = e
                 break
-        # 不修改本地，直接从云端删除，然后从云端重新加载
+        # 先从缓存中移除，立即更新UI（不重新同步，不显示加载状态）
         if email_to_delete:
+            self._cloud_emails_cache = [e for e in cloud_emails if e.get("id") != email_id and e.get("cloud_id") != email_id]
+            self._render_email_items()
+            # 后台从云端删除（不阻塞UI）
             cloud_id = email_to_delete.get("cloud_id", email_to_delete.get("id", ""))
             if cloud_id:
-                def delete_and_reload():
+                def do_delete():
                     self._delete_email_from_cloud(cloud_id)
-                    time.sleep(0.5)
-                    self._sync_emails_from_cloud()
-                threading.Thread(target=delete_and_reload, daemon=True).start()
-        self.page.snack_bar = ft.SnackBar(ft.Text("已删除邮箱"))
+                threading.Thread(target=do_delete, daemon=True).start()
+        # 右下角浮动提示（小卡片，不占满底部宽度）
+        self.page.snack_bar = ft.SnackBar(
+            content=ft.Row([
+                ft.Icon(ft.icons.CHECK_CIRCLE, size=18, color=ft.colors.GREEN),
+                ft.Container(width=8),
+                ft.Text("已删除邮箱", size=14, color=ft.colors.WHITE),
+            ], spacing=0),
+            duration=2000,
+            behavior=ft.SnackBarBehavior.FLOATING,
+            bgcolor=ft.colors.with_opacity(0.9, ft.colors.BLACK),
+            margin=ft.margin.only(20, 0, 20, 20),
+            padding=ft.padding.symmetric(horizontal=16, vertical=12),
+        )
         self.page.snack_bar.open = True
-        self.render_email_list()
+        self.page.update()
 
     # ========== 收件箱页面 ==========
     def _back_to_email_list(self):
         """返回邮箱列表，停止自动刷新"""
         self._stop_inbox_auto_refresh()
+        self._show_navbar()  # 返回主页面显示导航栏
         self.render_email_list()
 
     def show_inbox(self, email):
         self.current_email = email
+        self._hide_navbar()  # 进入收件箱隐藏导航栏
         self.content.controls.clear()
-        self.page.floating_action_button = None
         # 顶部栏
         self.content.controls.append(ft.Container(
             content=ft.Row([
-                ft.IconButton(ft.icons.ARROW_BACK, icon_size=24, on_click=lambda e: self._back_to_email_list()),
-                ft.Text("收件箱", size=20, weight=ft.FontWeight.BOLD, expand=True),
-                ft.IconButton(ft.icons.REFRESH, icon_size=22, on_click=lambda e: self.refresh_inbox()),
+                ft.IconButton(ft.icons.ARROW_BACK, icon_size=24, icon_color=self.clr_text, on_click=lambda e: self._back_to_email_list()),
+                ft.Text("收件箱", size=20, weight=ft.FontWeight.BOLD, color=self.clr_text, expand=True),
+                ft.IconButton(ft.icons.REFRESH, icon_size=22, icon_color=self.clr_text, on_click=lambda e: self.refresh_inbox()),
             ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
             padding=ft.padding.only(10, 45, 10, 5),
+            bgcolor=self.clr_bg,
         ))
         self.content.controls.append(ft.Container(
-            content=ft.Text(email.get("address", ""), size=13, color=ft.colors.GREY_500),
+            content=ft.Text(email.get("address", ""), size=13, color=self.clr_text2),
             padding=ft.padding.only(20, 0, 20, 10),
+            bgcolor=self.clr_bg,
         ))
         self._inbox_list = ft.ListView([], spacing=0, expand=True, padding=10)
         self.content.controls.append(self._inbox_list)
@@ -2918,7 +3220,12 @@ class TempMailApp:
                     if token:
                         ok, result = mailtm_get_messages(token)
                         if ok:
-                            messages = result.get("hydra:member", []) if isinstance(result, dict) else result
+                            if isinstance(result, dict):
+                                messages = result.get("hydra:member", [])
+                            elif isinstance(result, list):
+                                messages = result
+                            else:
+                                messages = []
                         else:
                             self.page.run_thread(lambda: self._show_inbox_error(str(result)))
                             return
@@ -2927,14 +3234,56 @@ class TempMailApp:
                         return
                 elif provider_lower in ["guerrilla", "guerrillamail", "guerrilla_mail"]:
                     token = email.get("token", "")
+                    addr = email.get("address", "")
+                    login = email.get("login", addr.split("@")[0] if "@" in addr else "")
+                    # 先用现有token获取邮件
                     if token:
                         ok, messages = guerrilla_get_messages(token)
-                        if not ok:
-                            self.page.run_thread(lambda: self._show_inbox_error(str(messages)))
-                            return
+                        if ok:
+                            # 成功，继续
+                            pass
+                        else:
+                            # token失效，用邮箱用户名重新建立会话
+                            if login:
+                                ok2, new_token, new_addr = guerrilla_set_email_user(login)
+                                if ok2 and new_token:
+                                    email["token"] = new_token
+                                    token = new_token
+                                    # 同步更新云端缓存中的token
+                                    try:
+                                        for em in getattr(self, '_cloud_emails_cache', []):
+                                            if em.get("id") == email.get("id") or em.get("address") == addr:
+                                                em["token"] = new_token
+                                                break
+                                    except:
+                                        pass
+                                    ok, messages = guerrilla_get_messages(token)
+                                    if not ok:
+                                        self.page.run_thread(lambda: self._show_inbox_error("获取邮件失败，请重试"))
+                                        return
+                                else:
+                                    self.page.run_thread(lambda: self._show_inbox_error("邮箱会话已失效，请删除后重新创建"))
+                                    return
+                            else:
+                                self.page.run_thread(lambda: self._show_inbox_error("邮箱信息不完整，请重新创建"))
+                                return
                     else:
-                        self.page.run_thread(lambda: self._show_inbox_error("邮箱token为空，无法获取邮件"))
-                        return
+                        # token为空，尝试用邮箱用户名建立会话
+                        if login:
+                            ok2, new_token, new_addr = guerrilla_set_email_user(login)
+                            if ok2 and new_token:
+                                email["token"] = new_token
+                                token = new_token
+                                ok, messages = guerrilla_get_messages(token)
+                                if not ok:
+                                    self.page.run_thread(lambda: self._show_inbox_error("获取邮件失败，请重试"))
+                                    return
+                            else:
+                                self.page.run_thread(lambda: self._show_inbox_error("无法建立邮箱会话，请重新创建"))
+                                return
+                        else:
+                            self.page.run_thread(lambda: self._show_inbox_error("邮箱token为空，无法获取邮件"))
+                            return
                 elif provider_lower in ["maildrop", "mail_drop"]:
                     login = email.get("login", "")
                     if login:
@@ -2973,6 +3322,31 @@ class TempMailApp:
                 self.page.run_thread(lambda: self._show_inbox_error(f"获取邮件异常: {str(e)}"))
                 return
 
+            # 安全检查：确保messages是列表
+            if not isinstance(messages, list):
+                messages = []
+            # Guerrilla Mail自动删除欢迎邮件
+            provider_lower = str(provider).lower()
+            if provider_lower in ["guerrilla", "guerrillamail", "guerrilla_mail"] and messages:
+                token = email.get("token", "")
+                welcome_ids = []
+                for m in messages:
+                    subj = str(m.get("mail_subject", m.get("subject", "")))
+                    sender = str(m.get("mail_from", m.get("from", "")))
+                    if "Welcome to Guerrilla Mail" in subj or "no-reply@guerrillamail.com" in sender:
+                        mid = m.get("mail_id", m.get("id", ""))
+                        if mid:
+                            welcome_ids.append(mid)
+                # 从列表中移除欢迎邮件
+                if welcome_ids:
+                    messages = [m for m in messages if m.get("mail_id", m.get("id", "")) not in welcome_ids]
+                    # 后台删除服务器上的欢迎邮件
+                    if token:
+                        for wid in welcome_ids:
+                            try:
+                                guerrilla_delete_email(token, wid)
+                            except:
+                                pass
             email["messages"] = messages
             # 更新云端缓存中的邮件列表
             cloud_emails = getattr(self, '_cloud_emails_cache', [])
@@ -3009,12 +3383,15 @@ class TempMailApp:
 
     def _render_inbox_messages(self, messages):
         self._inbox_list.controls.clear()
+        # 安全检查
+        if not isinstance(messages, list):
+            messages = []
         if not messages:
             empty_icon_path = self._get_empty_email_icon_path()
             self._inbox_list.controls.append(ft.Container(
                 content=ft.Column([
                     ft.Image(src=empty_icon_path, width=80, height=80, fit=ft.ImageFit.CONTAIN),
-                    ft.Text("暂无邮件", size=16, color=ft.colors.GREY_500),
+                    ft.Text("暂无邮件", size=16, color=self.clr_text2),
                 ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=12),
                 alignment=ft.alignment.center,
                 padding=ft.padding.only(0, 60, 0, 0),
@@ -3047,12 +3424,12 @@ class TempMailApp:
                 self._inbox_list.controls.append(ft.Container(
                     content=ft.Column([
                         ft.Row([
-                            ft.Text(str(sender), size=14, weight=ft.FontWeight.W_500, expand=True),
-                            ft.Text(str(date)[5:16] if len(str(date)) > 16 else str(date), size=11, color=ft.colors.GREY_400),
+                            ft.Text(str(sender), size=14, weight=ft.FontWeight.W_500, color=self.clr_text, expand=True),
+                            ft.Text(str(date)[5:16] if len(str(date)) > 16 else str(date), size=11, color=self.clr_text2),
                         ]),
-                        ft.Text(str(subject), size=13, color=ft.colors.GREY_700, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                        ft.Text(str(subject), size=13, color=self.clr_text2, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
                     ], spacing=4),
-                    bgcolor=ft.colors.WHITE, border_radius=10, padding=14,
+                    bgcolor=self.clr_card, border_radius=10, padding=14,
                     margin=ft.margin.only(12, 4, 12, 4),
                     on_click=lambda e, m=msg: self.show_email_detail(m),
                 ))
@@ -3098,21 +3475,22 @@ class TempMailApp:
     def show_email_detail(self, msg):
         email = self.current_email
         provider = email.get("provider", "mailtm")
-        msg_id = msg.get("id", "")
+        # 兼容不同邮箱类型的ID字段（Guerrilla Mail用mail_id，其他用id）
+        msg_id = msg.get("id", msg.get("mail_id", ""))
 
+        self._hide_navbar()  # 进入邮件详情隐藏导航栏
         self.content.controls.clear()
-        self.page.floating_action_button = None
         # 顶部固定栏
         self.content.controls.append(ft.Container(
             content=ft.Row([
-                ft.IconButton(ft.icons.ARROW_BACK, icon_size=24, on_click=lambda e: self.show_inbox(email)),
-                ft.Text("邮件详情", size=20, weight=ft.FontWeight.BOLD, expand=True),
+                ft.IconButton(ft.icons.ARROW_BACK, icon_size=24, icon_color=self.clr_text, on_click=lambda e: self.show_inbox(email)),
+                ft.Text("邮件详情", size=20, weight=ft.FontWeight.BOLD, color=self.clr_text, expand=True),
             ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
             padding=ft.padding.only(10, 45, 10, 5),
-            bgcolor=ft.colors.WHITE,
+            bgcolor=self.clr_bg,
         ))
         # 分隔线
-        self.content.controls.append(ft.Container(height=1, bgcolor=ft.colors.GREY_200))
+        self.content.controls.append(ft.Container(height=1, bgcolor=self.clr_border))
         # 内容区域（可滑动）
         self._detail_content = ft.ListView([
             ft.ProgressBar(width=280, color=THEME_COLOR),
@@ -3263,6 +3641,11 @@ class TempMailApp:
 
     def _render_email_detail(self, detail):
         self._detail_content.controls.clear()
+        # 安全检查：detail必须是字典，否则显示错误
+        if not isinstance(detail, dict):
+            self._detail_content.controls.append(ft.Text("邮件内容格式异常，无法显示", size=14, color=self.clr_text2))
+            self.page.update()
+            return
         # 适配不同 provider 的数据格式
         if "mail_from" in detail:
             # Guerrilla Mail 格式
@@ -3291,20 +3674,81 @@ class TempMailApp:
             sender = decode_mime(detail.get("mailfrom", detail.get("from", "未知")))
             subject = decode_mime(detail.get("subject", "(无主题)"))
             date = detail.get("date", "")
-            body = detail.get("data", detail.get("body", "(无内容)"))
+            raw_data = detail.get("data", "")
+            # maildrop的data字段是原始邮件源码，需要解析出正文
+            if raw_data and isinstance(raw_data, str) and ("Received:" in raw_data or "DKIM-Signature:" in raw_data or "Content-Type:" in raw_data):
+                try:
+                    import email as email_mod
+                    from email.header import decode_header
+                    msg_obj = email_mod.message_from_string(raw_data)
+                    # 解析主题
+                    if not subject or subject == "(无主题)":
+                        subj_raw = msg_obj.get("Subject", "")
+                        if subj_raw:
+                            decoded_parts = decode_header(subj_raw)
+                            subject = ""
+                            for part, enc in decoded_parts:
+                                if isinstance(part, bytes):
+                                    subject += part.decode(enc or "utf-8", errors="replace")
+                                else:
+                                    subject += part
+                    # 解析发件人
+                    if not sender or sender == "未知":
+                        from_raw = msg_obj.get("From", "")
+                        if from_raw:
+                            decoded_parts = decode_header(from_raw)
+                            sender = ""
+                            for part, enc in decoded_parts:
+                                if isinstance(part, bytes):
+                                    sender += part.decode(enc or "utf-8", errors="replace")
+                                else:
+                                    sender += part
+                    # 解析正文
+                    body = ""
+                    if msg_obj.is_multipart():
+                        for part in msg_obj.walk():
+                            ctype = part.get_content_type()
+                            cdisp = str(part.get("Content-Disposition", ""))
+                            if ctype == "text/plain" and "attachment" not in cdisp:
+                                payload = part.get_payload(decode=True)
+                                if payload:
+                                    charset = part.get_content_charset() or "utf-8"
+                                    body = payload.decode(charset, errors="replace")
+                                    break
+                        if not body:
+                            for part in msg_obj.walk():
+                                ctype = part.get_content_type()
+                                if ctype == "text/html":
+                                    payload = part.get_payload(decode=True)
+                                    if payload:
+                                        charset = part.get_content_charset() or "utf-8"
+                                        body = payload.decode(charset, errors="replace")
+                                        break
+                    else:
+                        payload = msg_obj.get_payload(decode=True)
+                        if payload:
+                            charset = msg_obj.get_content_charset() or "utf-8"
+                            body = payload.decode(charset, errors="replace")
+                    if not body:
+                        body = detail.get("body", "(无内容)")
+                except Exception:
+                    body = detail.get("body", str(raw_data)[:500] if raw_data else "(无内容)")
+            else:
+                body = detail.get("body", "(无内容)")
 
+        # 去除HTML标签
         if "<" in str(body) and ">" in str(body):
             import re
             body = re.sub(r'<[^>]+>', '', str(body))
         self._detail_content.controls.clear()
-        self._detail_content.controls.append(ft.Text(str(subject), size=18, weight=ft.FontWeight.BOLD))
+        self._detail_content.controls.append(ft.Text(str(subject), size=18, weight=ft.FontWeight.BOLD, color=self.clr_text))
         self._detail_content.controls.append(ft.Container(height=8))
-        self._detail_content.controls.append(ft.Text("发件人：" + str(sender), size=13, color=ft.colors.GREY_600))
-        self._detail_content.controls.append(ft.Text("时间：" + str(date), size=13, color=ft.colors.GREY_600))
+        self._detail_content.controls.append(ft.Text("发件人：" + str(sender), size=13, color=self.clr_text2))
+        self._detail_content.controls.append(ft.Text("时间：" + str(date), size=13, color=self.clr_text2))
         self._detail_content.controls.append(ft.Container(height=12))
-        self._detail_content.controls.append(ft.Container(height=1, bgcolor=ft.colors.GREY_200))
+        self._detail_content.controls.append(ft.Container(height=1, bgcolor=self.clr_border))
         self._detail_content.controls.append(ft.Container(height=12))
-        self._detail_content.controls.append(ft.Text(str(body), size=14, color=ft.colors.GREY_800))
+        self._detail_content.controls.append(ft.Text(str(body), size=14, color=self.clr_text))
         self.page.update()
 
     def _show_detail_error(self, err):
@@ -3315,12 +3759,13 @@ class TempMailApp:
     # ========== 号码页面 ==========
     def render_channel_page(self):
         """频道列表页面"""
+        self._stop_channel_polling()
+        self._show_navbar()  # 主页面显示导航栏
         self.content.controls.clear()
         self.page.floating_action_button = None
         self.content.controls.append(ft.Container(
             content=ft.Row([
                 ft.Text("邮箱频道", size=28, weight=ft.FontWeight.BOLD, expand=True, color=self.clr_text),
-                ft.IconButton(ft.icons.REFRESH, icon_size=22, on_click=lambda e: self.refresh_channels()),
             ]),
             padding=ft.padding.only(20, 50, 20, 10),
         ))
@@ -3335,7 +3780,9 @@ class TempMailApp:
             is_admin = user_role in ["超级管理员", "管理员", "admin", "Admin", "超级管理", "频道主"]
             if is_admin:
                 # 在线人数卡片
-                self._online_count_text = ft.Text("--", size=20, weight=ft.FontWeight.BOLD, color=self.clr_text)
+                # 在线人数：只加载一次，用缓存的值
+                _cached_online = getattr(self, '_cached_online_count', None)
+                self._online_count_text = ft.Text(str(_cached_online) if _cached_online is not None else "--", size=20, weight=ft.FontWeight.BOLD, color=self.clr_text)
                 online_card = ft.Container(
                     content=ft.Column([
                         ft.Container(
@@ -3348,7 +3795,7 @@ class TempMailApp:
                         self._online_count_text,
                     ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=0),
                     expand=True, bgcolor=self.clr_card, border_radius=12, padding=14,
-                    on_click=lambda e: self._show_toast("在线人数功能开发中"),
+                    
                 )
                 # 用户管理卡片
                 user_mgmt_card = ft.Container(
@@ -3385,8 +3832,9 @@ class TempMailApp:
                     padding=ft.padding.symmetric(horizontal=16),
                 ))
                 self.content.controls.append(ft.Container(height=10))
-                # 异步获取在线人数
-                threading.Thread(target=self._fetch_online_count, daemon=True).start()
+                # 异步获取在线人数（只在没有缓存时加载一次）
+                if getattr(self, "_cached_online_count", None) is None:
+                    threading.Thread(target=self._fetch_online_count, daemon=True).start()
 
         self._channel_list = ft.ListView([], spacing=0, expand=True, padding=16)
         self.content.controls.append(self._channel_list)
@@ -3408,6 +3856,7 @@ class TempMailApp:
                         try:
                             if hasattr(self, '_online_count_text') and self._online_count_text:
                                 self._online_count_text.value = str(count)
+                                self._cached_online_count = count
                                 self.page.update()
                         except:
                             pass
@@ -3439,6 +3888,7 @@ class TempMailApp:
             self._show_toast("无权限访问")
             return
 
+        self._hide_navbar()  # 进入用户管理隐藏导航栏
         self.content.controls.clear()
         self.page.floating_action_button = None
         self.content.scroll = None
@@ -3494,8 +3944,8 @@ class TempMailApp:
             self._show_toast("无权限访问")
             return
 
+        self._hide_navbar()  # 进入黑名单隐藏导航栏
         self.content.controls.clear()
-        self.page.floating_action_button = None
         self.content.scroll = None
 
         # 顶部固定栏
@@ -3641,11 +4091,21 @@ class TempMailApp:
                     on_click=lambda e, uid=user_id, uname=username:
                         self._delete_user(uid, uname))
 
+            # 本人标签（在卡片外定义）
+            _self_badge = ft.Container()
+            if is_self:
+                _self_badge = ft.Container(content=ft.Text("本人", size=9, color=ft.colors.WHITE),
+                    bgcolor=ft.colors.BLUE, border_radius=4,
+                    padding=ft.padding.symmetric(horizontal=5, vertical=1),
+                    alignment=ft.alignment.center)
+
             # 用户卡片（半透明，表示已封禁）
             user_card = ft.Container(
                 content=ft.Column([
-                    # 第一行：用户名 + 角色 + 状态
+                    # 第一行：本人标签 + 用户名 + 角色 + 状态
                     ft.Row([
+                        _self_badge,
+                        ft.Container(width=4) if is_self else ft.Container(),
                         ft.Text(name or username, size=15, weight=ft.FontWeight.BOLD, color=self.clr_text, expand=True),
                         role_badge,
                         ft.Container(width=4),
@@ -3708,7 +4168,7 @@ class TempMailApp:
             self.page.run_thread(lambda: self._show_toast(f"加载失败: {str(e)[:30]}"))
 
     def _render_user_list(self, users):
-        """渲染用户列表"""
+        """渲染用户列表（自己的卡片排第一，左上角显示"本人"标签）"""
         self._user_list_container.controls.clear()
         if not users:
             self._user_list_container.controls.append(ft.Container(
@@ -3724,7 +4184,17 @@ class TempMailApp:
         is_super_admin = str(self.current_user.get("role", "")) in ["超级管理员", "超级管理"]
         current_user_id = self.current_user.get("id", "")
 
+        # 把自己的用户移到列表第一个
+        self_user = None
+        other_users = []
         for user in users:
+            if str(user.get("user_id", "")) == str(current_user_id):
+                self_user = user
+            else:
+                other_users.append(user)
+        sorted_users = ([self_user] if self_user else []) + other_users
+
+        for user in sorted_users:
             user_id = user.get("user_id", "")
             username = user.get("username", "")
             name = user.get("name", username)
@@ -3786,11 +4256,21 @@ class TempMailApp:
                     on_click=lambda e, uid=user_id, uname=username:
                         self._delete_user(uid, uname))
 
+            # 本人标签（在卡片外定义）
+            _self_badge = ft.Container()
+            if is_self:
+                _self_badge = ft.Container(content=ft.Text("本人", size=9, color=ft.colors.WHITE),
+                    bgcolor=ft.colors.BLUE, border_radius=4,
+                    padding=ft.padding.symmetric(horizontal=5, vertical=1),
+                    alignment=ft.alignment.center)
+
             # 用户卡片
             user_card = ft.Container(
                 content=ft.Column([
-                    # 第一行：用户名 + 角色 + 状态
+                    # 第一行：本人标签 + 用户名 + 角色 + 状态
                     ft.Row([
+                        _self_badge,
+                        ft.Container(width=4) if is_self else ft.Container(),
                         ft.Text(name or username, size=15, weight=ft.FontWeight.BOLD, color=self.clr_text, expand=True),
                         role_badge,
                         ft.Container(width=4),
@@ -3896,70 +4376,87 @@ class TempMailApp:
             self._show_toast("无权限编辑管理员信息")
             return
 
-        username_field = ft.TextField(label="用户名", value=username, width=300, border_radius=8)
-        name_field = ft.TextField(label="昵称", value=name, width=300, border_radius=8)
-        email_field = ft.TextField(label="邮箱", value=email, width=300, border_radius=8)
-        qq_field = ft.TextField(label="QQ号", value=qq, width=300, border_radius=8)
+        # 根据是否是自己，显示不同的编辑字段
+        if is_self:
+            # 编辑自己：只能改昵称、邮箱、QQ号
+            name_field = ft.TextField(label="昵称", value=name, width=300, border_radius=8)
+            email_field = ft.TextField(label="邮箱", value=email, width=300, border_radius=8)
+            qq_field = ft.TextField(label="QQ号", value=qq, width=300, border_radius=8)
+            username_field = None
+            role_field = None
+            duration_perm_container = ft.Container()
+        else:
+            # 编辑其他用户：只能改昵称、角色、有效期权限
+            name_field = ft.TextField(label="昵称", value=name, width=300, border_radius=8)
+            username_field = None
+            email_field = None
+            qq_field = None
 
-        # 角色下拉框：
-        # 超级管理员：可以更改所有用户的角色
-        # 普通管理员：可以将普通用户更改为管理员（但不能更改其他管理员的角色）
-        if is_super_admin:
-            role_field = ft.Dropdown(
-                label="角色",
-                value=role,
-                options=[
-                    ft.dropdown.Option("用户"),
-                    ft.dropdown.Option("管理员"),
-                ],
-                width=300, border_radius=8,
+        # 角色下拉框：只有编辑其他用户时才显示（编辑自己不显示）
+        if not is_self:
+            # 超级管理员：可以更改所有用户的角色
+            # 普通管理员：可以将普通用户更改为管理员（但不能更改其他管理员的角色）
+            if is_super_admin:
+                role_field = ft.Dropdown(
+                    label="角色",
+                    value=role,
+                    options=[
+                        ft.dropdown.Option("用户"),
+                        ft.dropdown.Option("管理员"),
+                    ],
+                    width=300, border_radius=8,
+                )
+            else:
+                # 普通管理员编辑普通用户时，可以将用户更改为管理员
+                role_field = ft.Dropdown(
+                    label="角色（可提升为管理员）",
+                    value=role,
+                    options=[
+                        ft.dropdown.Option("用户"),
+                        ft.dropdown.Option("管理员"),
+                    ],
+                    width=300, border_radius=8,
+                )
+        else:
+            role_field = None
+
+        # 有效期权限：只有编辑其他用户时才显示（编辑自己不显示）
+        if not is_self:
+            can_use_2h = user.get("can_use_2h", False)
+            can_use_permanent = user.get("can_use_permanent", False)
+            if isinstance(can_use_2h, str):
+                can_use_2h = can_use_2h.lower() in ["true", "1", "yes"]
+            if isinstance(can_use_permanent, str):
+                can_use_permanent = can_use_permanent.lower() in ["true", "1", "yes"]
+
+            duration_perm_label = ft.Container(
+                content=ft.Text("临时邮箱有效期权限", size=13, weight=ft.FontWeight.BOLD, color=ft.colors.GREY_700),
+                padding=ft.padding.only(0, 8, 0, 4),
+            )
+
+            can_2h_switch = ft.Switch(
+                label="2小时有效期",
+                value=bool(can_use_2h),
+                active_color=THEME_COLOR,
+            )
+            can_permanent_switch = ft.Switch(
+                label="永久有效期",
+                value=bool(can_use_permanent),
+                active_color=THEME_COLOR,
+            )
+
+            duration_perm_container = ft.Container(
+                content=ft.Column([
+                    duration_perm_label,
+                    can_2h_switch,
+                    can_permanent_switch,
+                ], spacing=4, tight=True),
+                padding=ft.padding.only(0, 4, 0, 4),
             )
         else:
-            # 普通管理员编辑普通用户时，可以将用户更改为管理员
-            # （普通管理员不能编辑其他管理员，所以能到这里的都是普通用户）
-            role_field = ft.Dropdown(
-                label="角色（可提升为管理员）",
-                value=role,
-                options=[
-                    ft.dropdown.Option("用户"),
-                    ft.dropdown.Option("管理员"),
-                ],
-                width=300, border_radius=8,
-            )
-
-        # 有效期权限设置（管理员可以给普通用户开通2小时和永久有效期权限）
-        can_use_2h = user.get("can_use_2h", False)
-        can_use_permanent = user.get("can_use_permanent", False)
-        # 兼容字符串类型的布尔值
-        if isinstance(can_use_2h, str):
-            can_use_2h = can_use_2h.lower() in ["true", "1", "yes"]
-        if isinstance(can_use_permanent, str):
-            can_use_permanent = can_use_permanent.lower() in ["true", "1", "yes"]
-
-        duration_perm_label = ft.Container(
-            content=ft.Text("临时邮箱有效期权限", size=13, weight=ft.FontWeight.BOLD, color=ft.colors.GREY_700),
-            padding=ft.padding.only(0, 8, 0, 4),
-        )
-
-        can_2h_switch = ft.Switch(
-            label="2小时有效期",
-            value=bool(can_use_2h),
-            active_color=THEME_COLOR,
-        )
-        can_permanent_switch = ft.Switch(
-            label="永久有效期",
-            value=bool(can_use_permanent),
-            active_color=THEME_COLOR,
-        )
-
-        duration_perm_container = ft.Container(
-            content=ft.Column([
-                duration_perm_label,
-                can_2h_switch,
-                can_permanent_switch,
-            ], spacing=4, tight=True),
-            padding=ft.padding.only(0, 4, 0, 4),
-        )
+            duration_perm_container = ft.Container()
+            can_2h_switch = None
+            can_permanent_switch = None
 
         def do_save(e):
             self._close_dialog()
@@ -3968,19 +4465,23 @@ class TempMailApp:
                 try:
                     operator_id = self.current_user.get("id", "")
                     body = {
-                        "username": username_field.value,
                         "name": name_field.value,
-                        "email": email_field.value,
-                        "qq": qq_field.value,
                         "operator_id": operator_id,
-                        # 有效期权限
-                        "can_use_2h": can_2h_switch.value,
-                        "can_use_permanent": can_permanent_switch.value,
                     }
-                    # 超级管理员和普通管理员都可以更改角色
-                    # （普通管理员只能在编辑普通用户时更改角色，不能编辑其他管理员）
-                    if isinstance(role_field, ft.Dropdown):
-                        body["role"] = role_field.value
+                    # 编辑自己：可以改邮箱和QQ号
+                    if is_self:
+                        if email_field:
+                            body["email"] = email_field.value
+                        if qq_field:
+                            body["qq"] = qq_field.value
+                    else:
+                        # 编辑其他用户：可以改有效期权限和角色
+                        if can_2h_switch:
+                            body["can_use_2h"] = can_2h_switch.value
+                        if can_permanent_switch:
+                            body["can_use_permanent"] = can_permanent_switch.value
+                        if isinstance(role_field, ft.Dropdown):
+                            body["role"] = role_field.value
                     ok, result = self._remote_api_request("PUT", f"users/{user_id}", body=body)
                     if ok and isinstance(result, dict) and result.get("ok"):
                         self.page.run_thread(lambda: self._show_toast("保存成功"))
@@ -3995,11 +4496,11 @@ class TempMailApp:
             threading.Thread(target=save_thread, daemon=True).start()
 
         self.page.dialog = ft.AlertDialog(
-            title=ft.Text(f"编辑用户 - {name or username}"),
-            content=ft.Column([
-                username_field, name_field, email_field, qq_field, role_field,
-                duration_perm_container
-            ], tight=True, spacing=10),
+            title=ft.Text(f"编辑{'自己' if is_self else '用户'} - {name or username}"),
+            content=ft.Column(
+                ([name_field, email_field, qq_field] if is_self else
+                 ([name_field] + ([role_field] if isinstance(role_field, ft.Dropdown) else []) + [duration_perm_container])),
+                tight=True, spacing=10),
             actions=[
                 ft.TextButton("取消", on_click=lambda e: self._close_dialog()),
                 ft.TextButton("保存", on_click=do_save),
@@ -4056,11 +4557,154 @@ class TempMailApp:
                 ))
         self.page.update()
 
+    def _show_channel_info(self):
+        """显示群信息对话框（群头像、群名称、群ID、我的群昵称）"""
+        if not self.current_channel:
+            return
+        channel = self.current_channel
+        channel_name = channel.get("name", "邮箱交流群")
+        channel_id = channel.get("id", "1")
+        channel_icon = channel.get("icon", "📧")
+        # 我的群昵称（优先用本地设置的群昵称，否则用用户昵称）
+        my_nickname = getattr(self, '_channel_nickname', "")
+        if not my_nickname:
+            my_nickname = self.current_user.get("name", self.current_user.get("username", "")) if self.current_user else ""
+        # 判断是否超级管理员
+        user_role = str(self.current_user.get("role", "")) if self.current_user else ""
+        is_super_admin = user_role in ["超级管理员", "super_admin", "SuperAdmin"]
+
+        # 群头像
+        group_avatar = ft.Container(
+            content=ft.Text(channel_icon, size=40),
+            width=80, height=80,
+            bgcolor=ft.colors.with_opacity(0.15, THEME_COLOR),
+            border_radius=40, alignment=ft.alignment.center,
+        )
+
+        # 群名称行（超级管理员可点击修改）
+        def edit_group_name(e):
+            self._close_dialog()
+            self._show_edit_group_name_dialog(channel_name)
+        group_name_row = ft.Row([
+            ft.Text("群名称", size=14, color=ft.colors.GREY_600, width=70),
+            ft.Text(channel_name, size=15, weight=ft.FontWeight.W_500, expand=True),
+            ft.IconButton(ft.icons.EDIT, icon_size=18, on_click=edit_group_name, visible=is_super_admin),
+        ], spacing=0, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+
+        # 群ID行
+        group_id_row = ft.Row([
+            ft.Text("群ID", size=14, color=ft.colors.GREY_600, width=70),
+            ft.Text(channel_id, size=15, expand=True),
+        ], spacing=0, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+
+        # 我的群昵称行（可点击修改）
+        def edit_my_nickname(e):
+            self._close_dialog()
+            self._show_edit_channel_nickname_dialog(my_nickname)
+        my_nickname_row = ft.Row([
+            ft.Text("我的昵称", size=14, color=ft.colors.GREY_600, width=70),
+            ft.Text(my_nickname or "未设置", size=15, expand=True),
+            ft.IconButton(ft.icons.EDIT, icon_size=18, on_click=edit_my_nickname),
+        ], spacing=0, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+
+        # 成员数量行
+        members_count = channel.get("members", 512)
+        members_row = ft.Row([
+            ft.Text("成员数", size=14, color=ft.colors.GREY_600, width=70),
+            ft.Text(str(members_count), size=15, expand=True),
+        ], spacing=0, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+
+        self.page.dialog = ft.AlertDialog(
+            title=ft.Row([
+                group_avatar,
+                ft.Container(width=12),
+                ft.Column([
+                    ft.Text(channel_name, size=18, weight=ft.FontWeight.BOLD),
+                    ft.Text(f"ID: {channel_id}", size=12, color=ft.colors.GREY_500),
+                ], spacing=2),
+            ], spacing=0),
+            content=ft.Column([
+                ft.Container(height=8),
+                group_name_row,
+                ft.Container(height=4),
+                group_id_row,
+                ft.Container(height=4),
+                my_nickname_row,
+                ft.Container(height=4),
+                members_row,
+            ], spacing=0, tight=True, width=320),
+            actions=[
+                ft.TextButton("关闭", on_click=lambda e: self._close_dialog()),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self.page.dialog.open = True
+        self.page.update()
+
+    def _show_edit_group_name_dialog(self, current_name):
+        """修改群名称对话框（仅超级管理员可用）"""
+        name_input = ft.TextField(label="新群名称", value=current_name, width=300, border_radius=8)
+        def confirm(e):
+            new_name = name_input.value.strip()
+            if not new_name:
+                return
+            # 更新频道名称
+            if self.current_channel:
+                self.current_channel["name"] = new_name
+            # 更新本地频道列表缓存
+            if hasattr(self, '_channels_cache'):
+                for ch in self._channels_cache:
+                    if ch.get("id") == self.current_channel.get("id"):
+                        ch["name"] = new_name
+            self._close_dialog()
+            self._show_toast("群名称已修改")
+            # 重新进入聊天页更新标题
+            self.show_channel_chat(self.current_channel)
+        self.page.dialog = ft.AlertDialog(
+            title=ft.Text("修改群名称", size=18, weight=ft.FontWeight.BOLD),
+            content=name_input,
+            actions=[
+                ft.TextButton("取消", on_click=lambda e: self._close_dialog()),
+                ft.TextButton("确定", on_click=confirm),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self.page.dialog.open = True
+        self.page.update()
+
+    def _show_edit_channel_nickname_dialog(self, current_nickname):
+        """修改我的群昵称对话框"""
+        nick_input = ft.TextField(label="我的群昵称", value=current_nickname, width=300, border_radius=8)
+        def confirm(e):
+            new_nick = nick_input.value.strip()
+            if not new_nick:
+                return
+            # 保存到本地
+            self._channel_nickname = new_nick
+            self.data["channel_nickname"] = new_nick
+            save_data(self.data)
+            self._close_dialog()
+            self._show_toast("群昵称已修改")
+        self.page.dialog = ft.AlertDialog(
+            title=ft.Text("修改我的群昵称", size=18, weight=ft.FontWeight.BOLD),
+            content=nick_input,
+            actions=[
+                ft.TextButton("取消", on_click=lambda e: self._close_dialog()),
+                ft.TextButton("确定", on_click=confirm),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self.page.dialog.open = True
+        self.page.update()
+
     def show_channel_chat(self, channel):
         """频道聊天页面"""
         self.current_channel = channel
+        # 加载本地群昵称
+        if not hasattr(self, '_channel_nickname') or not self._channel_nickname:
+            self._channel_nickname = self.data.get("channel_nickname", "")
+        self._hide_navbar()  # 进入聊天页面隐藏导航栏
         self.content.controls.clear()
-        self.page.floating_action_button = None
         self.content.scroll = None  # 关闭整体滚动，确保布局稳定
         # 成员数量文本（后续从网站API获取实际数量后更新）
         self._channel_members_text = ft.Text("加载中... 成员", size=12, color=self.clr_text2)
@@ -4092,18 +4736,23 @@ class TempMailApp:
                 offset=ft.Offset(0, 2),
             ),
         )
-        # 消息列表（可滑动，初始显示加载提示）
-        self._chat_message_list = ft.ListView([
-            ft.Container(
-                content=ft.Column([
-                    ft.ProgressRing(width=30, height=30, color=THEME_COLOR, stroke_width=3),
-                    ft.Container(height=12),
-                    ft.Text("加载消息中...", size=14, color=self.clr_text2),
-                ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=0),
-                alignment=ft.alignment.center,
-                padding=ft.padding.only(0, 80, 0, 0),
-            )
-        ], spacing=8, expand=True, padding=16, auto_scroll=True)
+        # 消息列表（初始：有缓存显示缓存，没缓存显示加载中）
+        _has_cache = hasattr(self, '_cached_channel_messages') and self._cached_channel_messages
+        if _has_cache:
+            self._chat_message_list = ft.ListView([], spacing=8, expand=True, padding=16, auto_scroll=True)
+        else:
+            # 第一次打开，显示加载中
+            self._chat_message_list = ft.ListView([
+                ft.Container(
+                    content=ft.Column([
+                        ft.ProgressRing(width=30, height=30, color=THEME_COLOR, stroke_width=3),
+                        ft.Container(height=12),
+                        ft.Text("加载消息中...", size=14, color=self.clr_text2),
+                    ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=0),
+                    alignment=ft.alignment.center,
+                    padding=ft.padding.only(0, 80, 0, 0),
+                )
+            ], spacing=8, expand=True, padding=16, auto_scroll=True)
         # 使用Column布局，确保顶部栏、消息列表、输入框位置稳定
         self.content.controls.append(ft.Column([
             # 顶部固定栏
@@ -4114,7 +4763,7 @@ class TempMailApp:
                         ft.Text(channel.get("name", ""), size=18, weight=ft.FontWeight.BOLD, color=self.clr_text),
                         self._channel_members_text,
                     ], expand=True, spacing=2),
-                    ft.IconButton(ft.icons.REFRESH, icon_size=22, on_click=lambda e: self.refresh_channel_messages()),
+                    ft.IconButton(ft.icons.MENU, icon_size=24, on_click=lambda e: self._show_channel_info()),
                 ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                 padding=ft.padding.only(10, 45, 10, 5),
                 bgcolor=self.clr_bg,
@@ -4151,15 +4800,17 @@ class TempMailApp:
             except Exception as e:
                 pass
         threading.Thread(target=load_members_count, daemon=True).start()
-        # 加载消息列表（带缓存，避免频繁切换时重复加载）
-        current_time = time.time()
-        last_load = getattr(self, '_last_channel_msg_load_time', 0)
-        if current_time - last_load > 5:  # 5秒内不重复加载
-            self._last_channel_msg_load_time = current_time
-            self._load_channel_messages()
-        elif hasattr(self, '_cached_channel_messages'):
-            # 使用缓存的消息
+        # 消息加载逻辑：有缓存直接显示+后台增量加载；没缓存后台加载全部（加载中已显示）
+        if hasattr(self, '_cached_channel_messages') and self._cached_channel_messages:
+            # 直接显示缓存的消息，不显示加载中
             self._render_chat_messages(self._cached_channel_messages)
+            # 后台获取最新消息（增量更新，在已加载基础上追加新消息）
+            threading.Thread(target=self._poll_new_channel_messages, daemon=True).start()
+        else:
+            # 第一次进入，显示加载中，后台加载全部消息，加载完成后保存到本地缓存
+            threading.Thread(target=self._load_channel_messages, daemon=True).start()
+        # 启动后台实时轮询（每5秒获取最新消息）
+        self._start_channel_polling()
 
     def _fetch_all_user_roles(self, messages):
         """从网站实时获取所有用户的最新角色（不缓存，每次都实时获取）"""
@@ -4190,8 +4841,111 @@ class TempMailApp:
             pass
         return user_roles
 
+    def _start_channel_polling(self):
+        """启动频道消息实时轮询"""
+        self._channel_polling_running = True
+        def polling_loop():
+            while getattr(self, '_channel_polling_running', False):
+                time.sleep(5)
+                if not getattr(self, '_channel_polling_running', False):
+                    break
+                try:
+                    self.page.run_thread(self._poll_new_channel_messages)
+                except:
+                    pass
+        threading.Thread(target=polling_loop, daemon=True).start()
+
+    def _stop_channel_polling(self):
+        """停止频道消息轮询"""
+        self._channel_polling_running = False
+
+    def _poll_new_channel_messages(self):
+        """后台获取最新消息，增量更新（只追加新消息，不重新加载全部）"""
+        try:
+            cloud_messages = self._load_channel_messages_from_cloud()
+            if not cloud_messages:
+                return
+            # 获取缓存中已有的消息ID集合
+            cached_ids = set()
+            cached_messages = getattr(self, '_cached_channel_messages', [])
+            # 去掉发送中的临时消息（发送成功后服务器会返回真实消息）
+            cached_messages = [m for m in cached_messages if not m.get('is_sending', False)]
+            self._cached_channel_messages = cached_messages
+            for msg in cached_messages:
+                mid = str(msg.get("id", ""))
+                if mid and mid != "0":
+                    cached_ids.add(mid)
+            # 找出新消息（不在缓存中的）
+            new_cloud_messages = []
+            for msg in cloud_messages:
+                mid = str(msg.get("id", ""))
+                if mid and mid not in cached_ids:
+                    new_cloud_messages.append(msg)
+            if not new_cloud_messages:
+                return  # 没有新消息，不更新
+            # 获取新消息用户的角色（优先用缓存的角色）
+            user_roles = getattr(self, '_cached_user_roles', {})
+            current_user = self.current_user or {}
+            current_user_id = current_user.get("id", "")
+            formatted_new = []
+            for msg in new_cloud_messages:
+                user_id = msg.get("user_id", "")
+                username = msg.get("name", msg.get("username", "匿名"))
+                # 优先用缓存的角色，没有则实时获取
+                role = user_roles.get(str(user_id), msg.get("role", ""))
+                if not role and str(user_id) not in user_roles:
+                    try:
+                        ok, result = self._remote_api_request("GET", "user-role", params={"user_id": user_id})
+                        if ok and isinstance(result, dict) and result.get("ok"):
+                            data = result.get("data", {})
+                            if isinstance(data, dict):
+                                role = data.get("chat_role", data.get("role", ""))
+                                if role:
+                                    user_roles[str(user_id)] = role
+                    except:
+                        pass
+                is_me = str(user_id) == str(current_user_id)
+                created_at = msg.get("created_at", "")
+                time_str = ""
+                if created_at:
+                    try:
+                        t = time.strptime(created_at, "%Y-%m-%d %H:%M:%S")
+                        time_str = time.strftime("%H:%M", t)
+                    except:
+                        time_str = created_at[11:16] if len(created_at) > 16 else created_at
+                role_color = ft.colors.RED
+                role_str = str(role) if role else ""
+                if "频道主" in role_str or "主人" in role_str:
+                    role_color = ft.colors.AMBER
+                elif "管理员" in role_str:
+                    role_color = ft.colors.PURPLE
+                elif "运营" in role_str:
+                    role_color = ft.colors.PINK
+                elif "测试" in role_str:
+                    role_color = ft.colors.BLUE
+                formatted_new.append({
+                    "id": str(msg.get("id", "")),
+                    "user": username,
+                    "content": msg.get("content", ""),
+                    "time": time_str,
+                    "role": role_str,
+                    "role_color": role_color,
+                    "is_me": is_me,
+                    "is_system": False,
+                })
+            if not formatted_new:
+                return
+            # 追加到缓存并渲染
+            if not hasattr(self, '_cached_channel_messages'):
+                self._cached_channel_messages = []
+            self._cached_channel_messages.extend(formatted_new)
+            self._cached_user_roles = user_roles
+            self._render_chat_messages(self._cached_channel_messages)
+        except Exception as e:
+            pass
+
     def _load_channel_messages(self):
-        """加载频道消息列表"""
+        """加载频道消息列表（首次加载全部，后续用轮询增量更新）"""
         def load_thread():
             try:
                 cloud_messages = self._load_channel_messages_from_cloud()
@@ -4199,8 +4953,13 @@ class TempMailApp:
                     # 转换为应用内消息格式
                     current_user = self.current_user or {}
                     current_user_id = current_user.get("id", "")
-                    # 获取所有用户的最新角色（实时从网站获取）
-                    user_roles = self._fetch_all_user_roles(cloud_messages)
+                    # 获取用户角色（优先用缓存，缓存60秒，减少请求）
+                    user_roles = getattr(self, '_cached_user_roles', {})
+                    roles_cache_time = getattr(self, '_user_roles_cache_time', 0)
+                    if time.time() - roles_cache_time > 60 or not user_roles:
+                        user_roles = self._fetch_all_user_roles(cloud_messages)
+                        self._cached_user_roles = user_roles
+                        self._user_roles_cache_time = time.time()
                     formatted_messages = []
                     # 添加系统欢迎消息
                     formatted_messages.append({
@@ -4273,7 +5032,7 @@ class TempMailApp:
             self._chat_message_list.controls.append(ft.Container(
                 content=ft.Column([
                     ft.Text("💬", size=60),
-                    ft.Text("暂无消息，发个消息吧", size=14, color=ft.colors.GREY_500),
+                    ft.Text("", size=14),
                 ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=12),
                 alignment=ft.alignment.center,
                 padding=ft.padding.only(0, 60, 0, 0),
@@ -4291,7 +5050,17 @@ class TempMailApp:
                     # 我的消息靠右（名字和角色在气泡外面）
                     username = msg.get("user", "")
                     role = msg.get("role", "")
-                    role_color = msg.get("role_color", ft.colors.RED)
+                    role_color = msg.get("role_color")
+                    if not role_color:
+                        # 根据角色动态判断颜色（临时消息没有role_color时）
+                        if role in ["频道主", "频道组"]:
+                            role_color = ft.colors.AMBER
+                        elif role in ["管理员", "admin", "Admin", "超级管理", "超级管理员", "运营"]:
+                            role_color = ft.colors.PURPLE
+                        elif role == "测试":
+                            role_color = ft.colors.BLUE
+                        else:
+                            role_color = ft.colors.RED
                     # 名字和角色行（在气泡外面）
                     name_row = ft.Row([
                         ft.Container(width=40),
@@ -4310,16 +5079,38 @@ class TempMailApp:
                     else:
                         # 短消息不设固定宽度，气泡根据内容自适应
                         text_widget = ft.Text(msg_content, size=14, color=ft.colors.WHITE)
+                    # 发送中：气泡前面显示加载图标；发送失败：显示红色感叹号
+                    is_sending = msg.get("is_sending", False)
+                    is_failed = msg.get("is_failed", False)
+                    sending_icon = ft.Container()
+                    if is_sending:
+                        sending_icon = ft.Container(
+                            content=ft.ProgressRing(width=14, height=14, color=ft.colors.WHITE, stroke_width=2),
+                            padding=ft.padding.only(right=6),
+                            alignment=ft.alignment.center,
+                        )
+                    elif is_failed:
+                        sending_icon = ft.Container(
+                            content=ft.Icon(ft.icons.ERROR_OUTLINE, size=14, color=ft.colors.RED),
+                            padding=ft.padding.only(right=6),
+                            alignment=ft.alignment.center,
+                        )
                     bubble = ft.Container(
                         content=text_widget,
-                        bgcolor=THEME_COLOR, border_radius=12, padding=12,
-                        on_long_press=lambda e, content=msg_content: self._copy_chat_message(content),
+                        bgcolor=THEME_COLOR if not is_failed else ft.colors.GREY_400,
+                        border_radius=12, padding=12,
+                        on_long_press=lambda e, m=msg: self._show_chat_message_menu(m),
                     )
+                    # 加载/失败图标放在气泡前面（外面）
+                    _msg_row_controls = [ft.Container(width=40)]
+                    if is_sending or is_failed:
+                        _msg_row_controls.append(sending_icon)
+                    _msg_row_controls.append(bubble)
                     self._chat_message_list.controls.append(ft.Container(
                         content=ft.Column([
                             name_row,
                             ft.Container(height=4),
-                            ft.Row([ft.Container(width=40), bubble], alignment=ft.MainAxisAlignment.END, spacing=0),
+                            ft.Row(_msg_row_controls, alignment=ft.MainAxisAlignment.END, spacing=6),
                             ft.Container(height=2),
                             ft.Text(msg.get("time", ""), size=10, color=self.clr_text2, text_align=ft.TextAlign.RIGHT),
                         ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.END),
@@ -4329,7 +5120,17 @@ class TempMailApp:
                     # 别人的消息靠左（名字和角色在气泡外面）
                     username = msg.get("user", "")
                     role = msg.get("role", "")
-                    role_color = msg.get("role_color", ft.colors.RED)
+                    role_color = msg.get("role_color")
+                    if not role_color:
+                        # 根据角色动态判断颜色（临时消息没有role_color时）
+                        if role in ["频道主", "频道组"]:
+                            role_color = ft.colors.AMBER
+                        elif role in ["管理员", "admin", "Admin", "超级管理", "超级管理员", "运营"]:
+                            role_color = ft.colors.PURPLE
+                        elif role == "测试":
+                            role_color = ft.colors.BLUE
+                        else:
+                            role_color = ft.colors.RED
                     # 名字和角色行（在气泡外面）
                     name_row = ft.Row([
                         ft.Text(username, size=11, color=self.clr_text2),
@@ -4350,7 +5151,7 @@ class TempMailApp:
                     bubble = ft.Container(
                         content=text_widget,
                         bgcolor=self.clr_card, border_radius=12, padding=12,
-                        on_long_press=lambda e, content=msg_content: self._copy_chat_message(content),
+                        on_long_press=lambda e, m=msg: self._show_chat_message_menu(m),
                     )
                     self._chat_message_list.controls.append(ft.Container(
                         content=ft.Column([
@@ -4371,23 +5172,192 @@ class TempMailApp:
         self.page.snack_bar.open = True
         self.page.update()
 
+    def _is_url(self, text):
+        """判断文本是否是链接"""
+        if not text:
+            return False
+        text = text.strip()
+        return text.startswith("http://") or text.startswith("https://") or text.startswith("www.")
+
+    def _open_chat_link(self, url):
+        """打开消息中的链接"""
+        try:
+            import webbrowser
+            if not url.startswith("http"):
+                url = "https://" + url
+            webbrowser.open(url)
+            self._show_toast("正在打开链接...")
+        except Exception as e:
+            self._show_toast("打开链接失败：" + str(e)[:20])
+
+    def _recall_chat_message(self, msg):
+        """撤回消息（3分钟内，自己发的）"""
+        try:
+            msg_id = msg.get("id")
+            if not msg_id:
+                self._show_toast("撤回失败：缺少消息ID")
+                return
+            # 检查是否是自己发的消息
+            msg_user_id = msg.get("user_id", "")
+            current_user_id = self.current_user.get("id", "") if self.current_user else ""
+            if str(msg_user_id) != str(current_user_id):
+                self._show_toast("只能撤回自己的消息")
+                return
+            # 检查是否在3分钟内
+            msg_time = msg.get("created_at", "")
+            can_recall = True
+            if msg_time:
+                try:
+                    from datetime import datetime, timedelta
+                    # 尝试解析时间
+                    for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"]:
+                        try:
+                            msg_dt = datetime.strptime(msg_time, fmt)
+                            if datetime.now() - msg_dt > timedelta(minutes=3):
+                                can_recall = False
+                            break
+                        except:
+                            continue
+                except:
+                    pass
+            if not can_recall:
+                self._show_toast("超过3分钟，无法撤回")
+                return
+            # 调用撤回API（待确认端点，先用常见格式）
+            def do_recall():
+                try:
+                    # TODO: 确认撤回API端点，可能是 DELETE /chat/messages/{id} 或 POST /chat/messages/{id}/recall
+                    ok, result = self._remote_api_request("DELETE", f"chat/messages/{msg_id}")
+                    if ok and result and result.get("ok"):
+                        # 撤回成功，从消息列表中移除
+                        def remove_msg():
+                            try:
+                                for i, m in enumerate(self._chat_message_list.controls):
+                                    # 简单匹配：通过消息内容和时间判断
+                                    pass
+                                # 重新加载消息
+                                self._load_chat_messages()
+                                self._show_toast("消息已撤回")
+                            except:
+                                self._show_toast("撤回成功")
+                        self.page.run_thread(remove_msg)
+                    else:
+                        error_msg = result.get("msg", "撤回失败") if isinstance(result, dict) else "撤回失败"
+                        self._show_toast(str(error_msg))
+                except Exception as e:
+                    self._show_toast("撤回失败：" + str(e)[:20])
+            import threading
+            threading.Thread(target=do_recall, daemon=True).start()
+            self._show_toast("正在撤回...")
+        except Exception as e:
+            self._show_toast("撤回失败：" + str(e)[:20])
+
+    def _show_chat_message_menu(self, msg):
+        """长按消息弹出底部菜单（复制/打开链接/撤回）"""
+        try:
+            msg_content = msg.get("content", "")
+            msg_id = msg.get("id")
+            msg_user_id = msg.get("user_id", "")
+            current_user_id = self.current_user.get("id", "") if self.current_user else ""
+            is_own = str(msg_user_id) == str(current_user_id)
+            
+            # 构建菜单项
+            menu_items = []
+            
+            # 复制
+            menu_items.append(ft.ListTile(
+                leading=ft.Icon(ft.icons.COPY_OUTLINED, color=self.clr_text),
+                title=ft.Text("复制", size=15, color=self.clr_text),
+                on_click=lambda e: self._close_bottom_sheet_and_copy(msg_content),
+            ))
+            
+            # 打开链接（如果是链接）
+            if self._is_url(msg_content):
+                menu_items.append(ft.ListTile(
+                    leading=ft.Icon(ft.icons.LINK_OUTLINED, color=self.clr_text),
+                    title=ft.Text("打开链接", size=15, color=self.clr_text),
+                    on_click=lambda e: self._close_bottom_sheet_and_open(msg_content),
+                ))
+            
+            # 撤回（自己的消息）
+            if is_own and msg_id:
+                menu_items.append(ft.ListTile(
+                    leading=ft.Icon(ft.icons.UNDO_OUTLINED, color=ft.colors.RED),
+                    title=ft.Text("撤回", size=15, color=ft.colors.RED),
+                    on_click=lambda e: self._close_bottom_sheet_and_recall(msg),
+                ))
+            
+            # 取消按钮
+            menu_items.append(ft.Container(
+                content=ft.TextButton("取消", on_click=lambda e: self._close_chat_menu_sheet()),
+                alignment=ft.alignment.center,
+                bgcolor=self.clr_card,
+                border_radius=10,
+                margin=ft.padding.only(top=8),
+            ))
+            
+            # 底部菜单
+            self._chat_menu_sheet = ft.BottomSheet(
+                content=ft.Container(
+                    content=ft.Column(menu_items, spacing=0, tight=True),
+                    padding=ft.padding.only(10, 10, 10, 20),
+                    bgcolor=self.clr_bg,
+                    border_radius=ft.border_radius.only(top_left=16, top_right=16),
+                ),
+                open=True,
+            )
+            self.page.bottom_sheet = self._chat_menu_sheet
+            self.page.update()
+        except Exception as e:
+            # 降级：直接复制
+            self._copy_chat_message(msg_content)
+
+    def _close_chat_menu_sheet(self):
+        """关闭消息菜单底部弹窗"""
+        try:
+            if hasattr(self, '_chat_menu_sheet') and self._chat_menu_sheet:
+                self._chat_menu_sheet.open = False
+                self.page.update()
+        except:
+            pass
+
+    def _close_bottom_sheet_and_copy(self, content):
+        """关闭菜单并复制"""
+        self._close_chat_menu_sheet()
+        import threading
+        threading.Timer(0.2, lambda: self._copy_chat_message(content)).start()
+
+    def _close_bottom_sheet_and_open(self, url):
+        """关闭菜单并打开链接"""
+        self._close_chat_menu_sheet()
+        import threading
+        threading.Timer(0.2, lambda: self._open_chat_link(url)).start()
+
+    def _close_bottom_sheet_and_recall(self, msg):
+        """关闭菜单并撤回"""
+        self._close_chat_menu_sheet()
+        import threading
+        threading.Timer(0.2, lambda: self._recall_chat_message(msg)).start()
+
     def _on_chat_input_change(self, e):
         """输入框字数变化时更新内部计数器，超过500字自动截断"""
         try:
             val = e.control.value or ""
             if len(val) > 500:
                 e.control.value = val[:500]
-            count = len(e.control.value or "")
+                val = e.control.value[:500]
+            count = len(val)
             e.control.suffix_text = f"{count}/500"
+            e.control.update()
         except:
             pass
 
     def send_channel_message(self):
-        """发送频道消息"""
-        content = self._chat_input.value.strip() if self._chat_input.value else ""
-        if not content:
+        """发送频道消息（乐观发送：先显示带加载图标的消息，后台上传成功后去掉加载图标）"""
+        msg_text = self._chat_input.value.strip() if self._chat_input.value else ""
+        if not msg_text:
             return
-        if len(content) > 500:
+        if len(msg_text) > 500:
             self._show_toast("消息不能超过500字")
             return
         if not self.current_user:
@@ -4395,23 +5365,70 @@ class TempMailApp:
             self.page.snack_bar.open = True
             self.page.update()
             return
-        # 清空输入框
+
+        # 1. 先在本地缓存添加一条"发送中"的临时消息（乐观显示）
+        user_id = self.current_user.get("id", "")
+        username = getattr(self, '_channel_nickname', "")
+        if not username:
+            username = self.current_user.get("name", self.current_user.get("username", ""))
+        temp_msg_id = f"temp_{int(time.time()*1000)}"
+        temp_msg = {
+            "id": temp_msg_id,
+            "user_id": user_id,
+            "user": username,
+            "content": msg_text,
+            "is_me": True,
+            "is_sending": True,
+            "role": str(self.current_user.get("role", "用户")),
+            "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        if not hasattr(self, '_cached_channel_messages'):
+            self._cached_channel_messages = []
+        self._cached_channel_messages.append(temp_msg)
+        self._render_chat_messages(self._cached_channel_messages)
+
+        # 2. 清空输入框
         self._chat_input.value = ""
         self._chat_input.suffix_text = "0/500"
         self.page.update()
-        # 发送消息到云端
+
+        # 3. 后台发送消息到云端
         def send_thread():
             try:
-                ok = self._send_channel_message_to_cloud(content)
+                ok, error_msg = self._send_channel_message_to_cloud(msg_text)
                 if ok:
-                    # 发送成功，重新加载消息
+                    # 发送成功，直接重新加载全部消息（确保临时消息被替换）
                     time.sleep(0.5)
-                    self._load_channel_messages()
+                    def refresh_after_send():
+                        try:
+                            self._load_channel_messages()
+                        except Exception as ex:
+                            # 即使刷新失败，也要移除临时消息
+                            def cleanup():
+                                self._cached_channel_messages = [m for m in self._cached_channel_messages if m.get("id") != temp_msg_id]
+                                self._render_chat_messages(self._cached_channel_messages)
+                            self.page.run_thread(cleanup)
+                    self.page.run_thread(refresh_after_send)
                 else:
-                    self.page.run_thread(lambda: self._show_chat_error("发送失败，请重试"))
+                    def mark_failed():
+                        for m in self._cached_channel_messages:
+                            if m.get("id") == temp_msg_id:
+                                m["is_sending"] = False
+                                m["is_failed"] = True
+                        self._render_chat_messages(self._cached_channel_messages)
+                        self._show_toast("发送失败：" + (error_msg if error_msg else "请重试"))
+                    self.page.run_thread(mark_failed)
             except Exception as e:
-                self.page.run_thread(lambda: self._show_chat_error("发送失败：" + str(e)[:50]))
+                def mark_error():
+                    for m in self._cached_channel_messages:
+                        if m.get("id") == temp_msg_id:
+                            m["is_sending"] = False
+                            m["is_failed"] = True
+                    self._render_chat_messages(self._cached_channel_messages)
+                    self._show_toast("发送失败：" + str(e)[:30])
+                self.page.run_thread(mark_error)
         threading.Thread(target=send_thread, daemon=True).start()
+
 
     def _show_chat_error(self, err):
         """显示聊天错误"""
@@ -4462,7 +5479,3355 @@ class TempMailApp:
         except Exception as e:
             pass
 
+    def _copy_current_email_addr(self):
+        """复制当前选中邮箱地址"""
+        try:
+            if hasattr(self, 'current_email') and self.current_email:
+                addr = self.current_email.get("address", "")
+                if addr:
+                    self._copy_email(addr)
+                    return
+            # 尝试从邮箱列表取第一个
+            if hasattr(self, 'user_emails') and self.user_emails:
+                addr = self.user_emails[0].get("address", "")
+                if addr:
+                    self._copy_email(addr)
+                    return
+            self._show_toast("暂无邮箱地址可复制")
+        except Exception as e:
+            self._show_toast("复制失败")
+
+    def _show_send_email_dialog(self):
+        """发送邮件对话框"""
+        try:
+            from_addr = ""
+            if hasattr(self, 'current_email') and self.current_email:
+                from_addr = self.current_email.get("address", "")
+            to_field = ft.TextField(label="收件人", width=300, border_radius=8, hint_text="example@qq.com")
+            subject_field = ft.TextField(label="主题", width=300, border_radius=8)
+            body_field = ft.TextField(label="内容", width=300, border_radius=8, multiline=True, min_lines=4, max_lines=8)
+            from_field = ft.TextField(label="发件人", width=300, border_radius=8, value=from_addr, read_only=True)
+
+            def do_send(e):
+                to = to_field.value.strip()
+                subject = subject_field.value.strip()
+                body = body_field.value.strip()
+                if not to:
+                    self._show_toast("请填写收件人")
+                    return
+                self._close_dialog(dlg)
+                self._show_toast("邮件发送功能开发中...")
+
+            dlg = ft.AlertDialog(
+                title=ft.Text("发送邮件"),
+                content=ft.Column([from_field, to_field, subject_field, body_field], spacing=10, tight=True),
+                actions=[
+                    ft.TextButton("取消", on_click=lambda e: self._close_dialog(dlg)),
+                    ft.TextButton("发送", on_click=do_send),
+                ],
+            )
+            self.page.dialog = dlg
+            self.page.update()
+        except Exception as e:
+            self._show_toast("打开失败：" + str(e)[:20])
+
+    def render_features_page(self):
+        """功能页面 - 一排两个长方形卡片"""
+        self._show_navbar()  # 主页面显示导航栏
+        self.content.controls.clear()
+        self.page.floating_action_button = None
+        self.content.scroll = ft.ScrollMode.AUTO
+        self.content.padding = None
+        # 清除返回标志
+        self._show_back_to_features = False
+        self.content.controls.append(ft.Container(
+            content=ft.Row([
+                ft.Text("功能", size=28, weight=ft.FontWeight.BOLD, expand=True, color=self.clr_text),
+            ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.padding.only(20, 50, 20, 10), bgcolor=self.clr_bg,
+        ))
+        self.content.controls.append(ft.Container(height=1, bgcolor=self.clr_border, margin=ft.margin.symmetric(horizontal=20)))
+        self.content.controls.append(ft.Container(height=16))
+
+        # 全部本地实现，第一个邮箱不动，后面都是本地工具
+        all_features = [
+            {"icon": ft.icons.MAIL_OUTLINE, "name": "邮箱", "desc": "管理临时邮箱", "color": ft.colors.BLUE,
+             "action": lambda e: self._open_feature_page(self.render_email_list)},
+            {"icon": ft.icons.BRUSH, "name": "图片去水印", "desc": "画笔涂抹去除水印", "color": ft.colors.PINK,
+             "action": lambda e: self._open_feature_page(self._show_image_watermark)},
+            {"icon": ft.icons.QR_CODE_2, "name": "二维码生成", "desc": "文字链接转二维码", "color": ft.colors.GREEN,
+             "action": lambda e: self._open_feature_page(self._show_qrcode_generator)},
+            {"icon": ft.icons.CALCULATE, "name": "计算器", "desc": "简易科学计算", "color": ft.colors.ORANGE,
+             "action": lambda e: self._open_feature_page(self._show_calculator)},
+            {"icon": ft.icons.PASSWORD, "name": "密码生成", "desc": "随机安全密码", "color": ft.colors.RED,
+             "action": lambda e: self._open_feature_page(self._show_password_gen)},
+            {"icon": ft.icons.COLOR_LENS, "name": "颜色工具", "desc": "调色板/屏幕取色/色值转换", "color": ft.colors.AMBER,
+             "action": lambda e: self._open_feature_page(self._show_color_tools)},
+            {"icon": ft.icons.FEEDBACK_OUTLINED, "name": "问题反馈", "desc": "反馈问题给开发者", "color": ft.colors.PURPLE,
+             "action": lambda e: self._open_feature_page(self._show_feedback)},
+        ]
+
+        # 构建网格：每行2个卡片，圆角阴影，更好看
+        for i in range(0, len(all_features), 2):
+            row_cards = []
+            for f in all_features[i:i+2]:
+                card = ft.Container(
+                    content=ft.Row([
+                        ft.Container(
+                            content=ft.Icon(f["icon"], size=22, color=ft.colors.WHITE),
+                            width=42, height=42, bgcolor=f["color"], border_radius=12,
+                            alignment=ft.alignment.center,
+                        ),
+                        ft.Container(width=10),
+                        ft.Column([
+                            ft.Text(f["name"], size=14, weight=ft.FontWeight.W_600, color=self.clr_text),
+                            ft.Container(height=2),
+                            ft.Text(f["desc"], size=11, color=self.clr_text2, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                        ], spacing=0, expand=True, alignment=ft.MainAxisAlignment.CENTER),
+                    ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    expand=True, height=68,
+                    padding=ft.padding.symmetric(horizontal=12, vertical=10),
+                    bgcolor=self.clr_card, border_radius=14,
+                    shadow=ft.BoxShadow(spread_radius=0, blur_radius=8,
+                        color=ft.colors.with_opacity(0.08, ft.colors.BLACK), offset=ft.Offset(0, 2)),
+                    on_click=lambda e, f=f: f["action"](e),
+                    ink=True,
+                )
+                row_cards.append(card)
+            if len(row_cards) < 2:
+                row_cards.append(ft.Container(expand=True))
+            row_container = ft.Container(
+                content=ft.Row(row_cards, spacing=12),
+                padding=ft.padding.symmetric(horizontal=20),
+            )
+            self.content.controls.append(row_container)
+            self.content.controls.append(ft.Container(height=12))
+
+        self.content.controls.append(ft.Container(height=20))
+        self.page.update()
+
+    def _open_feature_page(self, page_func):
+        """从功能页打开子页面，标记需要返回键"""
+        self._show_back_to_features = True
+        page_func()
+        # 再次隐藏导航栏（因为page_func如render_email_list可能会显示导航栏）
+        if hasattr(self, '_navbar_area') and self._navbar_area:
+            self._navbar_area.visible = False
+        self.page.floating_action_button = None
+        self.page.update()
+
+    def _back_to_features(self, e=None):
+        """从子页面返回功能页"""
+        self._close_embedded_webview()
+        self._show_navbar()  # 返回主页面显示导航栏
+        self._show_back_to_features = False
+        self.current_tab = 1  # 功能页索引
+        self.render_features_page()
+
+    def _open_in_browser(self, url):
+        """用系统浏览器打开网址（功能页工具类卡片用）"""
+        try:
+            self.page.launch_url(url)
+        except Exception:
+            try:
+                import webbrowser
+                webbrowser.open(url)
+            except Exception:
+                self._show_toast("打开失败，请复制链接手动打开", "error")
+
+    def _get_flet_hwnd(self):
+        """获取Flet主窗口句柄"""
+        try:
+            import win32gui
+            # 先尝试用窗口标题查找
+            title = getattr(self.page, 'title', None) or "TempMail"
+            hwnd = win32gui.FindWindow(None, title)
+            if hwnd:
+                return hwnd
+            # 尝试查找包含应用名的窗口
+            def callback(h, extra):
+                t = win32gui.GetWindowText(h)
+                if t and ("TempMail" in t or "YoXi" in t or "邮箱" in t):
+                    extra.append(h)
+                return True
+            found = []
+            win32gui.EnumWindows(callback, found)
+            if found:
+                return found[0]
+            # 最后用前台窗口
+            return win32gui.GetForegroundWindow()
+        except Exception:
+            return None
+
+    def _close_embedded_webview(self):
+        """关闭嵌入的WebView子窗口"""
+        try:
+            import win32gui
+            import win32con
+            parent = self._get_flet_hwnd()
+            if parent:
+                def callback(h, extra):
+                    if win32gui.GetParent(h) == parent:
+                        extra.append(h)
+                    return True
+                children = []
+                win32gui.EnumWindows(callback, children)
+                for h in children:
+                    win32gui.SendMessage(h, win32con.WM_CLOSE, 0, 0)
+        except Exception:
+            pass
+
+    def _open_webview_page(self, url, title):
+        """应用内嵌入式打开网页：pywebview窗口嵌入Flet窗口内部"""
+        self._hide_navbar()
+        self.content.controls.clear()
+        self.content.scroll = None
+        self.content.padding = None
+        self._show_back_to_features = True
+        self.page.floating_action_button = None
+
+        # 顶部标题栏（保留返回按钮）
+        header = ft.Container(
+            content=ft.Row([
+                ft.IconButton(ft.icons.ARROW_BACK, icon_size=22,
+                    on_click=lambda e: (self._close_embedded_webview(), self._back_to_features())),
+                ft.Text(title, size=18, weight=ft.FontWeight.BOLD, expand=True, color=self.clr_text),
+            ], vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=4),
+            padding=ft.padding.only(8, 45, 8, 8), bgcolor=self.clr_bg,
+        )
+        divider = ft.Container(height=1, bgcolor=self.clr_border)
+
+        # 加载中提示
+        loading = ft.Container(
+            content=ft.Column([
+                ft.ProgressRing(width=36, height=36, color=THEME_COLOR, stroke_width=3),
+                ft.Container(height=12),
+                ft.Text("正在加载...", size=14, color=self.clr_text2),
+            ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=0),
+            alignment=ft.alignment.center, expand=True,
+        )
+
+        self.content.controls.append(ft.Column([header, divider, loading], spacing=0, expand=True))
+        self.page.update()
+
+        # 启动嵌入式 WebView
+        def _launch():
+            try:
+                import subprocess, time
+                parent_hwnd = self._get_flet_hwnd()
+                if not parent_hwnd:
+                    self.page.run_thread(lambda: self._show_toast("获取窗口失败，用外部浏览器打开", "error"))
+                    self.page.run_thread(lambda: self._open_in_browser(url))
+                    return
+                script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "embedded_webview.py")
+                if not os.path.exists(script_path):
+                    script_path = os.path.join(_base_dir, "embedded_webview.py")
+                proc = subprocess.Popen(
+                    [sys.executable, script_path, title, url, str(parent_hwnd)],
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
+                )
+                self._embedded_webview_proc = proc
+            except Exception as e:
+                self.page.run_thread(lambda: self._show_toast("打开失败: " + str(e)[:15], "error"))
+                self.page.run_thread(lambda: self._open_in_browser(url))
+
+        import threading
+        threading.Thread(target=_launch, daemon=True).start()
+
+
+    def _reload_webview(self, webview, url):
+        """刷新WebView页面"""
+        if webview:
+            try:
+                webview.url = url
+                self.page.update()
+                self._show_toast("已刷新", "success")
+            except Exception:
+                self._show_toast("刷新失败", "error")
+        else:
+            self._show_toast("无法刷新", "warning")
+
+    def _feature_page_header(self, title, on_back=None):
+        """功能子页面通用顶部栏"""
+        back_action = on_back if on_back else self._back_to_features
+        self.content.controls.append(ft.Container(
+            content=ft.Row([
+                ft.IconButton(ft.icons.ARROW_BACK, icon_size=22, on_click=back_action),
+                ft.Text(title, size=20, weight=ft.FontWeight.BOLD, expand=True, color=self.clr_text),
+            ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.padding.only(8, 45, 12, 8), bgcolor=self.clr_bg,
+        ))
+        self.content.controls.append(ft.Container(height=1, bgcolor=self.clr_border))
+
+    def _show_qrcode_generator(self):
+        """二维码生成器页面（输入框+生成按钮一行，下方方框展示，可保存）"""
+        self._hide_navbar()
+        self.content.controls.clear()
+        self.content.scroll = ft.ScrollMode.AUTO
+        self._feature_page_header("二维码生成")
+        qr_input = ft.TextField(
+            label="输入文字或链接", multiline=False, height=48, expand=True,
+            bgcolor=ft.colors.with_opacity(0.75, ft.colors.WHITE),
+            border_color=ft.colors.GREY_500, focused_border_color=THEME_COLOR,
+            color=self.clr_text, cursor_color=THEME_COLOR,
+            label_style=ft.TextStyle(color=self.clr_text2, size=12),
+            text_size=14, content_padding=10,
+        )
+        qr_image = ft.Image(src="", width=220, height=220, fit=ft.ImageFit.CONTAIN, visible=False)
+        qr_placeholder = ft.Container(
+            content=ft.Column([
+                ft.Icon(ft.icons.QR_CODE_2, size=48, color=ft.colors.GREY_300),
+                ft.Container(height=8),
+                ft.Text("输入内容后点生成", size=12, color=ft.colors.GREY_400),
+            ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=0),
+            width=220, height=220, alignment=ft.alignment.center,
+        )
+        qr_error = ft.Text("", size=12, color=ft.colors.RED)
+        qr_current_url = {"url": ""}
+        save_btn = ft.Container(
+            content=ft.Row([
+                ft.Icon(ft.icons.DOWNLOAD, size=16, color=ft.colors.WHITE),
+                ft.Container(width=6),
+                ft.Text("保存到相册", size=14, weight=ft.FontWeight.W_600, color=ft.colors.WHITE),
+            ], alignment=ft.MainAxisAlignment.CENTER, spacing=0),
+            height=44, bgcolor=ft.colors.BLUE_500, border_radius=10,
+            alignment=ft.alignment.center, visible=False, ink=True,
+            on_click=lambda e: self._save_qrcode_image(qr_current_url.get("url", "")),
+        )
+
+        def do_generate(e):
+            text = qr_input.value.strip() if qr_input.value else ""
+            if not text:
+                qr_error.value = "请输入内容"
+                qr_image.visible = False
+                qr_placeholder.visible = True
+                save_btn.visible = False
+                self.page.update()
+                return
+            qr_error.value = ""
+            import urllib.parse
+            encoded = urllib.parse.quote(text)
+            qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&margin=10&data={encoded}"
+            qr_current_url["url"] = qr_url
+            qr_image.src = qr_url
+            qr_image.visible = True
+            qr_placeholder.visible = False
+            save_btn.visible = True
+            self.page.update()
+
+        gen_btn = ft.Container(
+            content=ft.Text("生成", size=14, weight=ft.FontWeight.W_600, color=ft.colors.WHITE),
+            width=64, height=48, bgcolor=ft.colors.GREEN, border_radius=10,
+            alignment=ft.alignment.center, on_click=do_generate, ink=True,
+        )
+        self.content.controls.append(ft.Container(
+            content=ft.Column([
+                ft.Container(height=12),
+                ft.Row([qr_input, gen_btn], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ft.Container(height=6),
+                qr_error,
+                ft.Container(height=10),
+                ft.Container(
+                    content=ft.Stack([qr_placeholder, qr_image], alignment=ft.alignment.center),
+                    alignment=ft.alignment.center, padding=16,
+                    bgcolor=self.clr_card, border_radius=14,
+                    border=ft.border.all(1, self.clr_border),
+                ),
+                ft.Container(height=12),
+                save_btn,
+            ], spacing=0),
+            padding=ft.padding.symmetric(horizontal=16),
+        ))
+        self.page.update()
+
+    def _save_qrcode_image(self, qr_url):
+        """保存二维码图片到本地相册目录"""
+        if not qr_url:
+            self._show_toast("请先生成二维码", "warning")
+            return
+        try:
+            import urllib.request, time as _t
+            save_dir = os.path.join(_base_dir, "user_data", "qrcodes")
+            os.makedirs(save_dir, exist_ok=True)
+            filename = f"qrcode_{int(_t.time())}.png"
+            filepath = os.path.join(save_dir, filename)
+            req = urllib.request.Request(qr_url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                with open(filepath, "wb") as f:
+                    f.write(resp.read())
+            self._show_toast(f"已保存到: qrcodes/{filename}", "success")
+        except Exception as e:
+            self._show_toast("保存失败: " + str(e)[:15], "error")
+
+    def _extract_url_from_text(self, text):
+        """从分享文字中自动提取URL"""
+        import re
+        pattern = r'https?://[^\s一-鿿，。！？、；：""''（）【】]+'
+        match = re.search(pattern, text)
+        return match.group(0) if match else text.strip()
+
+    def _find_video_url_in_json(self, obj, depth=0):
+        """递归从JSON中查找视频地址"""
+        if depth > 6:
+            return None
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                kl = str(k).lower()
+                if isinstance(v, str) and v.startswith("http") and any(x in kl for x in ["url","play","video","addr","src","download","link","nwm"]):
+                    if any(ext in v for ext in [".mp4", ".flv", ".m3u8", "video", "play"]):
+                        return v
+                if isinstance(v, str) and v.startswith("http") and ".mp4" in v:
+                    return v
+                r = self._find_video_url_in_json(v, depth+1)
+                if r:
+                    return r
+        elif isinstance(obj, list):
+            for item in obj:
+                r = self._find_video_url_in_json(item, depth+1)
+                if r:
+                    return r
+        return None
+
+    def _find_cover_in_json(self, obj, depth=0):
+        """递归从JSON中查找封面图"""
+        if depth > 6:
+            return None
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                kl = str(k).lower()
+                if isinstance(v, str) and v.startswith("http") and any(x in kl for x in ["cover","pic","image","img","thumb","poster"]):
+                    if any(ext in v for ext in [".jpg", ".jpeg", ".png", ".webp"]):
+                        return v
+                r = self._find_cover_in_json(v, depth+1)
+                if r:
+                    return r
+        elif isinstance(obj, list):
+            for item in obj:
+                r = self._find_cover_in_json(item, depth+1)
+                if r:
+                    return r
+        return None
+
+    def _show_video_watermark(self):
+        """视频去水印（自动提取分享链接+多API轮询）"""
+        self._hide_navbar()
+        self.content.controls.clear()
+        self.content.scroll = ft.ScrollMode.AUTO
+        self._feature_page_header("视频去水印")
+        _input_style = {
+            "bgcolor": ft.colors.with_opacity(0.75, ft.colors.WHITE),
+            "border_color": ft.colors.GREY_500,
+            "focused_border_color": THEME_COLOR,
+            "color": self.clr_text,
+            "cursor_color": THEME_COLOR,
+            "label_style": ft.TextStyle(color=self.clr_text2, size=12),
+        }
+        video_input = ft.TextField(
+            label="粘贴抖音/快手分享内容", multiline=True, min_lines=2, max_lines=3, expand=True,
+            text_size=13, content_padding=10, hint_text="直接粘贴复制的分享文字，自动提取链接",
+            hint_style=ft.TextStyle(color=ft.colors.GREY_400, size=12),
+            **_input_style,
+        )
+        result_title = ft.Text("", size=14, weight=ft.FontWeight.W_600, color=self.clr_text, max_lines=2)
+        result_cover = ft.Image(src="", width=100, height=140, fit=ft.ImageFit.COVER, border_radius=8, visible=False)
+        result_url = ft.Text("", size=12, color=THEME_COLOR, selectable=True, max_lines=3)
+        result_author = ft.Text("", size=12, color=self.clr_text2)
+        result_card = ft.Container(visible=False)
+        parse_status = ft.Text("", size=12, color=self.clr_text2)
+
+        def do_parse(e):
+            raw = video_input.value.strip() if video_input.value else ""
+            if not raw:
+                self._show_toast("请粘贴分享内容", "warning")
+                return
+            url = self._extract_url_from_text(raw)
+            if not url.startswith("http"):
+                self._show_toast("未找到有效链接", "error")
+                return
+            video_input.value = url
+            result_card.visible = False
+            parse_status.value = "正在解析（多接口轮询）..."
+            self.page.update()
+
+            def parse_thread():
+                import urllib.parse, urllib.request, json as _json, ssl as _ssl
+                ctx = _ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = _ssl.CERT_NONE
+                encoded = urllib.parse.quote(url, safe="")
+                api_list = [
+                    f"https://api.vvhan.com/api/douyin?url={encoded}",
+                    f"https://api.oioweb.cn/api/douyin.php?url={encoded}",
+                    f"https://api.qqsuu.cn/api/dm-douyin?url={encoded}",
+                    f"https://api.lolimi.cn/API/dy/jx.php?url={encoded}",
+                    f"https://api.gumengya.com/Api/Douyin?url={encoded}",
+                    f"https://api.52vmy.cn/api/dy?url={encoded}",
+                ]
+                found = False
+                for idx, api_url in enumerate(api_list):
+                    try:
+                        parse_status.value = f"尝试接口 {idx+1}/{len(api_list)}..."
+                        self.page.run_thread(self.page.update)
+                        req = urllib.request.Request(api_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+                        with urllib.request.urlopen(req, timeout=12, context=ctx) as resp:
+                            body = resp.read().decode("utf-8", errors="ignore")
+                        try:
+                            data = _json.loads(body)
+                        except Exception:
+                            continue
+                        play_url = self._find_video_url_in_json(data)
+                        if not play_url:
+                            continue
+                        cover = self._find_cover_in_json(data)
+                        title = ""
+                        author = ""
+                        def _find_str(o, keys, d=0):
+                            if d > 5: return ""
+                            if isinstance(o, dict):
+                                for k, v in o.items():
+                                    if str(k).lower() in keys and isinstance(v, str) and v:
+                                        return v
+                                for v in o.values():
+                                    r = _find_str(v, keys, d+1)
+                                    if r: return r
+                            elif isinstance(o, list):
+                                for item in o:
+                                    r = _find_str(item, keys, d+1)
+                                    if r: return r
+                            return ""
+                        title = _find_str(data, ["title","desc","description","文案","标题"]) or "解析成功"
+                        author = _find_str(data, ["author","nickname","name","作者","昵称"])
+                        result_title.value = title
+                        result_url.value = play_url
+                        result_author.value = author
+                        if cover:
+                            result_cover.src = cover
+                            result_cover.visible = True
+                        result_card.visible = True
+                        parse_status.value = ""
+                        found = True
+                        self.page.run_thread(lambda: self._show_toast("解析成功", "success"))
+                        self.page.run_thread(self.page.update)
+                        break
+                    except Exception:
+                        continue
+                if not found:
+                    # 备用：抖音直连解析
+                    if "douyin" in url or "iesdouyin" in url:
+                        parse_status.value = "尝试抖音直连解析..."
+                        self.page.run_thread(self.page.update)
+                        try:
+                            import re as _re
+                            # 跟随重定向获取真实页面
+                            req2 = urllib.request.Request(url, headers={
+                                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15",
+                                "Referer": "https://www.douyin.com/",
+                            })
+                            with urllib.request.urlopen(req2, timeout=15, context=ctx) as resp2:
+                                final_url = resp2.geturl()
+                                html = resp2.read().decode("utf-8", errors="ignore")
+                            # 从HTML中提取视频地址
+                            play_url = ""
+                            # 尝试多种格式
+                            patterns = [
+                                r'"playAddr"[^}]+?"urlList"\s*:\s*\["([^"]+)"',
+                                r'"play_addr"[^}]+?"url_list"\s*:\s*\["([^"]+)"',
+                                r'(https?://[^"\s]+\.mp4[^"\s]*)',
+                                r'"src"\s*:\s*"([^"]+\.mp4[^"]*)"',
+                            ]
+                            for pat in patterns:
+                                m = _re.search(pat, html)
+                                if m:
+                                    play_url = m.group(1).replace("\\u002F", "/").replace("\\/", "/")
+                                    break
+                            if play_url:
+                                result_url.value = play_url
+                                result_title.value = "抖音直连解析"
+                                result_card.visible = True
+                                parse_status.value = ""
+                                self.page.run_thread(lambda: self._show_toast("解析成功", "success"))
+                                self.page.run_thread(self.page.update)
+                                found = True
+                        except Exception:
+                            pass
+                if not found:
+                    parse_status.value = ""
+                    self.page.run_thread(lambda: self._show_toast("所有接口暂不可用，请稍后重试", "error"))
+                    self.page.run_thread(self.page.update)
+            threading.Thread(target=parse_thread, daemon=True).start()
+
+        def do_open(e):
+            if result_url.value:
+                try:
+                    self.page.launch_url(result_url.value)
+                except Exception:
+                    self._copy_text(result_url.value, "链接已复制，请在浏览器打开")
+
+        def do_copy_link(e):
+            if result_url.value:
+                self._copy_text(result_url.value, "无水印链接已复制")
+
+        parse_btn = ft.Container(
+            content=ft.Column([ft.Icon(ft.icons.SEARCH, size=20, color=ft.colors.WHITE),
+                ft.Container(height=2), ft.Text("解析", size=12, weight=ft.FontWeight.W_600, color=ft.colors.WHITE)],
+                alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=0),
+            width=64, height=64, bgcolor=ft.colors.PURPLE, border_radius=12,
+            alignment=ft.alignment.center, on_click=do_parse, ink=True,
+        )
+        result_card = ft.Container(
+            content=ft.Column([
+                ft.Row([
+                    result_cover,
+                    ft.Container(width=10),
+                    ft.Column([
+                        result_title,
+                        ft.Container(height=4),
+                        result_author,
+                    ], spacing=0, expand=True),
+                ], vertical_alignment=ft.CrossAxisAlignment.START),
+                ft.Container(height=10),
+                ft.Container(height=1, bgcolor=self.clr_border),
+                ft.Container(height=10),
+                ft.Text("无水印视频链接", size=11, color=self.clr_text2),
+                ft.Container(height=4),
+                result_url,
+                ft.Container(height=12),
+                ft.Row([
+                    ft.Container(content=ft.Row([ft.Icon(ft.icons.PLAY_ARROW, size=16, color=ft.colors.WHITE),
+                        ft.Container(width=4), ft.Text("打开视频", size=13, weight=ft.FontWeight.W_600, color=ft.colors.WHITE)],
+                        alignment=ft.MainAxisAlignment.CENTER, spacing=0),
+                        expand=True, height=40, bgcolor=THEME_COLOR, border_radius=8,
+                        alignment=ft.alignment.center, on_click=do_open, ink=True),
+                    ft.Container(width=8),
+                    ft.Container(content=ft.Row([ft.Icon(ft.icons.COPY, size=16, color=THEME_COLOR),
+                        ft.Container(width=4), ft.Text("复制链接", size=13, weight=ft.FontWeight.W_600, color=THEME_COLOR)],
+                        alignment=ft.MainAxisAlignment.CENTER, spacing=0),
+                        expand=True, height=40, bgcolor=ft.colors.TRANSPARENT, border_radius=8,
+                        border=ft.border.all(1, THEME_COLOR),
+                        alignment=ft.alignment.center, on_click=do_copy_link, ink=True),
+                ], spacing=0),
+            ], spacing=0),
+            bgcolor=self.clr_card, border_radius=14, padding=14,
+            visible=False,
+        )
+        self.content.controls.append(ft.Container(
+            content=ft.Column([
+                ft.Container(height=12),
+                ft.Row([video_input, parse_btn], spacing=8, vertical_alignment=ft.CrossAxisAlignment.START),
+                ft.Container(height=6),
+                parse_status,
+                ft.Container(height=8),
+                ft.Container(content=ft.Row([
+                    ft.Icon(ft.icons.INFO_OUTLINE, size=12, color=self.clr_text3),
+                    ft.Container(width=4),
+                    ft.Text("直接粘贴抖音分享文字（含文案），自动提取链接解析", size=11, color=self.clr_text3),
+                ], spacing=0), padding=ft.padding.symmetric(horizontal=4)),
+                ft.Container(height=14),
+                result_card,
+            ], spacing=0),
+            padding=ft.padding.symmetric(horizontal=16),
+        ))
+        self.page.update()
+
+    def _show_calculator(self):
+        """简易计算器页面"""
+        self._hide_navbar()
+        self.content.controls.clear()
+        self.content.scroll = None
+        self._feature_page_header("计算器")
+        calc_display = ft.Text("0", size=36, weight=ft.FontWeight.BOLD, color=self.clr_text,
+            text_align=ft.TextAlign.RIGHT, selectable=True)
+        calc_state = {"expr": "", "just_eval": False}
+
+        def calc_btn(text, color=None, bgcolor=None, expand=1):
+            return ft.Container(
+                content=ft.Text(text, size=18, weight=ft.FontWeight.W_600,
+                    color=color or self.clr_text, text_align=ft.TextAlign.CENTER),
+                expand=expand, height=56, bgcolor=bgcolor or self.clr_card,
+                border_radius=12, alignment=ft.alignment.center,
+                on_click=lambda e: self._calc_input(text, calc_state, calc_display),
+                ink=True,
+            )
+
+        ops_row1 = ft.Row([calc_btn("C", color=ft.colors.RED), calc_btn("(", color=THEME_COLOR),
+            calc_btn(")", color=THEME_COLOR), calc_btn("÷", color=THEME_COLOR)], spacing=8)
+        ops_row2 = ft.Row([calc_btn("7"), calc_btn("8"), calc_btn("9"),
+            calc_btn("×", color=THEME_COLOR)], spacing=8)
+        ops_row3 = ft.Row([calc_btn("4"), calc_btn("5"), calc_btn("6"),
+            calc_btn("−", color=THEME_COLOR)], spacing=8)
+        ops_row4 = ft.Row([calc_btn("1"), calc_btn("2"), calc_btn("3"),
+            calc_btn("+", color=THEME_COLOR)], spacing=8)
+        ops_row5 = ft.Row([calc_btn("0", expand=2), calc_btn("."),
+            calc_btn("=", bgcolor=THEME_COLOR, color=ft.colors.WHITE)], spacing=8)
+
+        self.content.controls.append(ft.Container(
+            content=ft.Column([
+                ft.Container(height=16),
+                ft.Container(content=calc_display, bgcolor=self.clr_card, border_radius=12,
+                    padding=ft.padding.symmetric(horizontal=16, vertical=20),
+                    alignment=ft.alignment.center_right),
+                ft.Container(height=14),
+                ops_row1, ft.Container(height=8),
+                ops_row2, ft.Container(height=8),
+                ops_row3, ft.Container(height=8),
+                ops_row4, ft.Container(height=8),
+                ops_row5,
+            ], spacing=0),
+            padding=ft.padding.symmetric(horizontal=16),
+        ))
+        self.page.update()
+
+    def _calc_input(self, key, state, display):
+        """计算器按键处理"""
+        try:
+            if key == "C":
+                state["expr"] = ""
+                display.value = "0"
+            elif key == "=":
+                if not state["expr"]:
+                    return
+                expr = state["expr"].replace("×", "*").replace("÷", "/").replace("−", "-")
+                try:
+                    result = eval(expr, {"__builtins__": {}}, {})
+                    result = round(float(result), 10)
+                    if result == int(result):
+                        result = int(result)
+                    display.value = str(result)
+                    state["expr"] = str(result)
+                    state["just_eval"] = True
+                except Exception:
+                    display.value = "错误"
+                    state["expr"] = ""
+            else:
+                if state.get("just_eval") and key not in "+−×÷":
+                    state["expr"] = ""
+                state["just_eval"] = False
+                state["expr"] += key
+                display.value = state["expr"] if state["expr"] else "0"
+            self.page.update()
+        except Exception:
+            pass
+
+    def _show_image_watermark(self):
+        """图片去水印（画笔涂抹模式：GestureDetector检测涂抹，动态圆点显示）"""
+        self._hide_navbar()
+        self.content.controls.clear()
+        self.content.scroll = ft.ScrollMode.AUTO
+        self._feature_page_header("图片去水印")
+
+        DISPLAY_W = 300
+        state = {"img_path": "", "orig_w": 0, "orig_h": 0, "display_h": 300,
+                 "scale": 1.0, "painted": [], "result_path": ""}
+
+        brush_text = ft.Text("20", size=14, weight=ft.FontWeight.BOLD, color=THEME_COLOR, width=28)
+        brush_slider = ft.Slider(min=8, max=50, value=20, divisions=42,
+            active_color=THEME_COLOR,
+            on_change=lambda e: (setattr(brush_text, "value", str(int(e.control.value))), self.page.update()))
+
+        img_display = ft.Image(src="", width=DISPLAY_W, fit=ft.ImageFit.FIT_WIDTH, visible=False)
+        paint_layer = ft.Stack([], width=DISPLAY_W, height=300)
+        placeholder = ft.Container(
+            content=ft.Column([
+                ft.Icon(ft.icons.IMAGE_OUTLINED, size=48, color=ft.colors.GREY_300),
+                ft.Container(height=8),
+                ft.Text("选择图片后用画笔涂抹水印区域", size=12, color=ft.colors.GREY_400),
+            ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=0),
+            width=DISPLAY_W, height=300, alignment=ft.alignment.center,
+            bgcolor=ft.colors.with_opacity(0.5, ft.colors.GREY_100), border_radius=12,
+        )
+        status_text = ft.Text("选择一张图片开始", size=13, color=self.clr_text2, text_align=ft.TextAlign.CENTER)
+        result_img = ft.Image(src="", width=DISPLAY_W, fit=ft.ImageFit.FIT_WIDTH, visible=False)
+
+        def _bs():
+            return int(brush_slider.value) if brush_slider.value else 20
+
+        def _add_dot(x, y):
+            bs = _bs()
+            state["painted"].append((x, y, bs))
+            dot = ft.Container(
+                width=bs, height=bs, border_radius=bs // 2,
+                bgcolor=ft.colors.with_opacity(0.45, ft.colors.RED),
+                left=x - bs // 2, top=y - bs // 2,
+            )
+            paint_layer.controls.append(dot)
+
+        def on_pan_start(e):
+            if not state["img_path"]: return
+            _add_dot(e.local_x, e.local_y)
+            self.page.update()
+
+        def on_pan_update(e):
+            if not state["img_path"]: return
+            _add_dot(e.local_x, e.local_y)
+            self.page.update()
+
+        img_stack = ft.Stack([
+            img_display,
+            paint_layer,
+        ], width=DISPLAY_W, height=300)
+
+        gesture = ft.GestureDetector(
+            content=img_stack,
+            on_pan_start=on_pan_start,
+            on_pan_update=on_pan_update,
+        )
+
+        def do_select(e):
+            try:
+                import tkinter as tk
+                from tkinter import filedialog
+                from PIL import Image
+                root = tk.Tk(); root.withdraw(); root.attributes("-topmost", True)
+                filepath = filedialog.askopenfilename(
+                    title="选择图片",
+                    filetypes=[("图片文件", "*.png *.jpg *.jpeg *.bmp *.webp"), ("所有文件", "*.*")])
+                root.destroy()
+                if not filepath: return
+                img = Image.open(filepath).convert("RGB")
+                w, h = img.size
+                state["img_path"] = filepath
+                state["orig_w"], state["orig_h"] = w, h
+                state["scale"] = w / DISPLAY_W
+                state["display_h"] = max(100, int(h / state["scale"]))
+                state["painted"] = []
+                state["result_path"] = ""
+                img_display.src = filepath
+                img_display.visible = True
+                img_display.height = state["display_h"]
+                img_display.width = DISPLAY_W
+                paint_layer.height = state["display_h"]
+                paint_layer.width = DISPLAY_W
+                paint_layer.controls.clear()
+                placeholder.visible = False
+                result_img.visible = False
+                img_stack.height = state["display_h"]
+                status_text.value = "按住鼠标涂抹水印区域，然后点开始去除"
+                self.page.update()
+            except Exception as ex:
+                status_text.value = "选择失败: " + str(ex)[:25]
+                self.page.update()
+
+        def do_clear(e):
+            state["painted"] = []
+            paint_layer.controls.clear()
+            status_text.value = "已清除涂抹"
+            self.page.update()
+
+        def do_process(e):
+            if not state["img_path"]:
+                self._show_toast("请先选择图片", "warning"); return
+            if not state["painted"]:
+                self._show_toast("请先用画笔涂抹水印区域", "warning"); return
+            status_text.value = "处理中..."
+            self.page.update()
+            def process_thread():
+                try:
+                    from PIL import Image, ImageFilter
+                    import numpy as np
+                    img = Image.open(state["img_path"]).convert("RGB")
+                    w, h = img.size
+                    scale = state["scale"]
+                    mask = Image.new("L", (w, h), 0)
+                    from PIL import ImageDraw
+                    draw = ImageDraw.Draw(mask)
+                    for (dx, dy, bs) in state["painted"]:
+                        ix, iy = int(dx * scale), int(dy * scale)
+                        r = int(bs * scale / 2) + 2
+                        draw.ellipse([ix-r, iy-r, ix+r, iy+r], fill=255)
+                    filtered = img.filter(ImageFilter.MedianFilter(size=7))
+                    for _ in range(2):
+                        filtered = filtered.filter(ImageFilter.MedianFilter(size=5))
+                    arr_orig = np.array(img)
+                    arr_filt = np.array(filtered)
+                    mask_blur = mask.filter(ImageFilter.GaussianBlur(radius=3))
+                    arr_mb = np.array(mask_blur).astype(float) / 255.0
+                    arr_mb = arr_mb[:,:,np.newaxis]
+                    arr_result = (arr_orig * (1-arr_mb) + arr_filt * arr_mb).astype(np.uint8)
+                    result = Image.fromarray(arr_result)
+                    save_dir = os.path.join(_base_dir, "user_data", "watermark_removed")
+                    os.makedirs(save_dir, exist_ok=True)
+                    import time as _t
+                    out_path = os.path.join(save_dir, "cleaned_{}.png".format(int(_t.time())))
+                    result.save(out_path, "PNG")
+                    state["result_path"] = out_path
+                    result_img.src = out_path
+                    result_img.visible = True
+                    result_img.height = state["display_h"]
+                    status_text.value = "处理完成！涂抹了{}个点".format(len(state["painted"]))
+                    self.page.run_thread(self.page.update)
+                except Exception as ex:
+                    status_text.value = "处理失败: " + str(ex)[:25]
+                    self.page.run_thread(self.page.update)
+            import threading
+            threading.Thread(target=process_thread, daemon=True).start()
+
+        def do_save(e):
+            if state["result_path"]:
+                self._show_toast("已保存到 watermark_removed 文件夹", "success")
+            else:
+                self._show_toast("请先处理图片", "warning")
+
+        def _btn(text, icon, color, on_click):
+            return ft.Container(
+                content=ft.Row([ft.Icon(icon, size=16, color=ft.colors.WHITE),
+                    ft.Text(text, size=13, weight=ft.FontWeight.W_600, color=ft.colors.WHITE)],
+                    alignment=ft.MainAxisAlignment.CENTER, spacing=4),
+                expand=True, height=44, bgcolor=color, border_radius=10,
+                alignment=ft.alignment.center, on_click=on_click, ink=True)
+
+        self.content.controls.append(ft.Container(
+            content=ft.Column([
+                ft.Container(height=12),
+                ft.Container(content=ft.Row([
+                    ft.Icon(ft.icons.BRUSH, size=18, color=self.clr_text2),
+                    ft.Text("画笔大小", size=13, color=self.clr_text, expand=True), brush_text,
+                ], vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(horizontal=4)),
+                brush_slider,
+                ft.Container(height=4),
+                ft.Container(content=ft.Stack([placeholder, gesture], alignment=ft.alignment.top_left),
+                    alignment=ft.alignment.center),
+                ft.Container(height=8),
+                status_text,
+                ft.Container(height=8),
+                ft.Container(content=result_img, alignment=ft.alignment.center),
+                ft.Container(height=12),
+                ft.Row([_btn("选择图片", ft.icons.IMAGE, ft.colors.BLUE_500, do_select),
+                        _btn("清除", ft.icons.CLEAR, ft.colors.GREY, do_clear)], spacing=8),
+                ft.Container(height=8),
+                ft.Row([_btn("开始去除", ft.icons.BRUSH, THEME_COLOR, do_process),
+                        _btn("保存", ft.icons.SAVE, ft.colors.GREEN, do_save)], spacing=8),
+                ft.Container(height=10),
+                ft.Text("提示：按住鼠标在图片上涂抹，红色覆盖的地方会被去除", size=11,
+                    color=self.clr_text3, text_align=ft.TextAlign.CENTER),
+                ft.Container(height=20),
+            ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.padding.symmetric(horizontal=16),
+        ))
+        self.page.update()
+
+    def _show_shortlink_tool(self):
+        """短链接工具（多API轮询）"""
+        self._hide_navbar()
+        self.content.controls.clear()
+        self.content.scroll = ft.ScrollMode.AUTO
+        self._feature_page_header("短链接")
+        link_input = ft.TextField(
+            label="输入长链接（https://...）", multiline=False, height=48, expand=True,
+            bgcolor=ft.colors.with_opacity(0.75, ft.colors.WHITE),
+            border_color=ft.colors.GREY_500, focused_border_color=THEME_COLOR,
+            color=self.clr_text, cursor_color=THEME_COLOR,
+            label_style=ft.TextStyle(color=self.clr_text2, size=12),
+            text_size=13, content_padding=10,
+        )
+        result_card = ft.Container(visible=False)
+        result_url = ft.Text("", size=15, weight=ft.FontWeight.W_600, color=THEME_COLOR, selectable=True)
+        result_original = ft.Text("", size=12, color=self.clr_text2, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)
+        short_status = ft.Text("", size=12, color=self.clr_text2)
+
+        def do_short(e):
+            url = link_input.value.strip() if link_input.value else ""
+            if not url:
+                self._show_toast("请输入链接", "warning")
+                return
+            if not url.startswith("http"):
+                url = "https://" + url
+            result_card.visible = False
+            short_status.value = "生成中（多接口轮询）..."
+            self.page.update()
+            def short_thread():
+                import urllib.parse, urllib.request, json as _json, ssl as _ssl
+                ctx = _ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = _ssl.CERT_NONE
+                encoded = urllib.parse.quote(url, safe="")
+                # 多API源，按顺序尝试
+                api_list = [
+                    ("is.gd", f"https://is.gd/create.php?format=json&url={encoded}", "json", "shorturl"),
+                    ("tinyurl", f"https://tinyurl.com/api-create.php?url={encoded}", "text", None),
+                    ("ft12", f"https://api.ft12.com/api.php?url={encoded}", "text", None),
+                    ("52vmy", f"https://api.52vmy.cn/api/dwz?url={encoded}&type=json", "json", None),
+                    ("cenguigui", f"https://api.cenguigui.cn/api/dwz/?url={encoded}", "json", None),
+                ]
+                found = False
+                for idx, (name, api_url, resp_type, key) in enumerate(api_list):
+                    try:
+                        short_status.value = f"尝试接口 {idx+1}/{len(api_list)} ({name})..."
+                        self.page.run_thread(self.page.update)
+                        req = urllib.request.Request(api_url, headers={"User-Agent": "Mozilla/5.0"})
+                        with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+                            body = resp.read().decode("utf-8", errors="ignore").strip()
+                        if not body:
+                            continue
+                        short_url = ""
+                        if resp_type == "json":
+                            try:
+                                data = _json.loads(body)
+                                if key and key in data:
+                                    short_url = data[key]
+                                else:
+                                    # 递归找短链接
+                                    def _find_short(o, d=0):
+                                        if d > 4: return ""
+                                        if isinstance(o, dict):
+                                            for k, v in o.items():
+                                                if isinstance(v, str) and v.startswith("http") and len(v) < 50:
+                                                    return v
+                                            for v in o.values():
+                                                r = _find_short(v, d+1)
+                                                if r: return r
+                                        elif isinstance(o, list):
+                                            for item in o:
+                                                r = _find_short(item, d+1)
+                                                if r: return r
+                                        return ""
+                                    short_url = _find_short(data)
+                            except Exception:
+                                if body.startswith("http"):
+                                    short_url = body
+                        else:  # text
+                            if body.startswith("http"):
+                                short_url = body
+                        if short_url and short_url.startswith("http") and short_url != url:
+                            result_url.value = short_url
+                            result_original.value = "原链接: " + url
+                            result_card.visible = True
+                            short_status.value = ""
+                            found = True
+                            self.page.run_thread(lambda: self._show_toast("生成成功", "success"))
+                            self.page.run_thread(self.page.update)
+                            break
+                    except Exception:
+                        continue
+                if not found:
+                    short_status.value = ""
+                    self.page.run_thread(lambda: self._show_toast("所有接口暂不可用，请稍后重试", "error"))
+                    self.page.run_thread(self.page.update)
+            threading.Thread(target=short_thread, daemon=True).start()
+
+        def do_copy(e):
+            if result_url.value:
+                self._copy_text(result_url.value, "短链接已复制")
+
+        gen_btn = ft.Container(
+            content=ft.Text("生成", size=14, weight=ft.FontWeight.W_600, color=ft.colors.WHITE),
+            width=64, height=48, bgcolor=ft.colors.TEAL, border_radius=10,
+            alignment=ft.alignment.center, on_click=do_short, ink=True,
+        )
+        result_card = ft.Container(
+            content=ft.Column([
+                ft.Text("短链接", size=12, color=self.clr_text2),
+                ft.Container(height=4),
+                result_url,
+                ft.Container(height=6),
+                result_original,
+                ft.Container(height=10),
+                ft.OutlinedButton("复制链接", expand=True, height=40,
+                    style=ft.ButtonStyle(color=THEME_COLOR), on_click=do_copy),
+            ], spacing=0),
+            bgcolor=self.clr_card, border_radius=12, padding=14, visible=False,
+        )
+        self.content.controls.append(ft.Container(
+            content=ft.Column([
+                ft.Container(height=12),
+                ft.Row([link_input, gen_btn], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ft.Container(height=6),
+                short_status,
+                ft.Container(height=8),
+                result_card,
+                ft.Container(height=10),
+                ft.Text("多接口自动轮询，免费接口可能不稳定", size=11, color=self.clr_text3, text_align=ft.TextAlign.CENTER),
+            ], spacing=0),
+            padding=ft.padding.symmetric(horizontal=16),
+        ))
+        self.page.update()
+
+    def _show_text_tools(self):
+        """文本工具：字数统计、大小写转换、去空格、反转"""
+        self._hide_navbar()
+        self.content.controls.clear()
+        self.content.scroll = ft.ScrollMode.AUTO
+        self._feature_page_header("文本工具")
+        text_input = ft.TextField(
+            label="输入或粘贴文本", multiline=True, min_lines=4, max_lines=8, expand=True,
+            bgcolor=ft.colors.with_opacity(0.75, ft.colors.WHITE),
+            border_color=ft.colors.GREY_500, focused_border_color=THEME_COLOR,
+            color=self.clr_text, cursor_color=THEME_COLOR,
+            label_style=ft.TextStyle(color=self.clr_text2, size=12),
+            text_size=13, content_padding=10, hint_text="在这里输入文本...",
+            hint_style=ft.TextStyle(color=ft.colors.GREY_400, size=12),
+        )
+        stats_text = ft.Text("字符数: 0  字数: 0  行数: 0", size=12, color=self.clr_text2)
+
+        def update_stats(e=None):
+            t = text_input.value or ""
+            chars = len(t)
+            words = len(t.split())
+            lines = len(t.splitlines()) if t else 0
+            stats_text.value = "字符数: {}  字数: {}  行数: {}".format(chars, words, lines)
+
+        text_input.on_change = update_stats
+
+        def make_btn(text, color, on_click):
+            return ft.Container(
+                content=ft.Text(text, size=13, weight=ft.FontWeight.W_600, color=ft.colors.WHITE, text_align=ft.TextAlign.CENTER),
+                expand=True, height=42, bgcolor=color, border_radius=10,
+                alignment=ft.alignment.center, on_click=on_click, ink=True,
+            )
+
+        def do_upper(e):
+            if text_input.value:
+                text_input.value = text_input.value.upper()
+                update_stats()
+                self.page.update()
+        def do_lower(e):
+            if text_input.value:
+                text_input.value = text_input.value.lower()
+                update_stats()
+                self.page.update()
+        def do_title(e):
+            if text_input.value:
+                text_input.value = text_input.value.title()
+                update_stats()
+                self.page.update()
+        def do_trim(e):
+            if text_input.value:
+                lines = [l.strip() for l in text_input.value.splitlines()]
+                text_input.value = "\n".join(lines)
+                update_stats()
+                self.page.update()
+        def do_reverse(e):
+            if text_input.value:
+                text_input.value = text_input.value[::-1]
+                update_stats()
+                self.page.update()
+        def do_clear(e):
+            text_input.value = ""
+            update_stats()
+            self.page.update()
+        def do_copy(e):
+            if text_input.value:
+                self._copy_text(text_input.value, "已复制")
+
+        self.content.controls.append(ft.Container(
+            content=ft.Column([
+                ft.Container(height=12),
+                text_input,
+                ft.Container(height=6),
+                stats_text,
+                ft.Container(height=12),
+                ft.Row([make_btn("大写", ft.colors.BLUE, do_upper), make_btn("小写", ft.colors.TEAL, do_lower)], spacing=8),
+                ft.Container(height=8),
+                ft.Row([make_btn("首字母大写", ft.colors.PURPLE, do_title), make_btn("去空格", ft.colors.ORANGE, do_trim)], spacing=8),
+                ft.Container(height=8),
+                ft.Row([make_btn("反转文本", ft.colors.PINK, do_reverse), make_btn("清空", ft.colors.GREY, do_clear)], spacing=8),
+                ft.Container(height=8),
+                make_btn("复制结果", ft.colors.GREEN, do_copy),
+            ], spacing=0),
+            padding=ft.padding.symmetric(horizontal=16),
+        ))
+        self.page.update()
+
+    def _show_password_gen(self):
+        """密码生成器：可配置长度和字符类型"""
+        self._hide_navbar()
+        self.content.controls.clear()
+        self.content.scroll = ft.ScrollMode.AUTO
+        self._feature_page_header("密码生成")
+        
+        length_text = ft.Text("16", size=22, weight=ft.FontWeight.BOLD, color=THEME_COLOR)
+        length_slider = ft.Slider(min=4, max=32, value=16, divisions=28, label="{value}",
+            active_color=THEME_COLOR,
+            on_change=lambda e: (setattr(length_text, "value", str(int(e.control.value))), self.page.update()))
+        
+        use_upper = ft.Checkbox(label="大写字母 (A-Z)", value=True, fill_color=THEME_COLOR)
+        use_lower = ft.Checkbox(label="小写字母 (a-z)", value=True, fill_color=THEME_COLOR)
+        use_digits = ft.Checkbox(label="数字 (0-9)", value=True, fill_color=THEME_COLOR)
+        use_symbols = ft.Checkbox(label="特殊符号 (!@#$)", value=False, fill_color=THEME_COLOR)
+        
+        # 密码结果展示卡片
+        result_text = ft.Text("点击下方按钮生成", size=18, weight=ft.FontWeight.W_600, 
+            color=self.clr_text2, selectable=True, expand=True)
+        result_card = ft.Container(
+            content=ft.Row([
+                ft.Icon(ft.icons.PASSWORD, size=20, color=THEME_COLOR),
+                ft.Container(width=8),
+                result_text,
+                ft.IconButton(ft.icons.COPY, icon_size=20, icon_color=self.clr_text2,
+                    on_click=lambda e: self._copy_text(result_text.value, "密码已复制") if result_text.value and result_text.value != "点击下方按钮生成" else self._show_toast("请先生成密码")),
+            ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            bgcolor=self.clr_card, border_radius=12, padding=ft.padding.all(16),
+            border=ft.border.all(1, self.clr_border),
+        )
+        
+        def do_generate(e):
+            import random, string
+            length = int(length_slider.value)
+            chars = ""
+            if use_upper.value: chars += string.ascii_uppercase
+            if use_lower.value: chars += string.ascii_lowercase
+            if use_digits.value: chars += string.digits
+            if use_symbols.value: chars += "!@#$%^&*()_+-=[]{}|;:,.<>?"
+            if not chars:
+                self._show_toast("至少选择一种字符类型")
+                return
+            pwd = "".join(random.choice(chars) for _ in range(length))
+            result_text.value = pwd
+            result_text.color = self.clr_text
+            self.page.update()
+        
+        # 生成按钮
+        gen_btn = ft.Container(
+            content=ft.Row([
+                ft.Icon(ft.icons.REFRESH, size=20, color=ft.colors.WHITE),
+                ft.Container(width=8),
+                ft.Text("生成密码", size=16, weight=ft.FontWeight.W_600, color=ft.colors.WHITE),
+            ], alignment=ft.MainAxisAlignment.CENTER),
+            height=52, bgcolor=THEME_COLOR, border_radius=12,
+            on_click=do_generate, alignment=ft.alignment.center,
+            shadow=ft.BoxShadow(spread_radius=0, blur_radius=12,
+                color=ft.colors.with_opacity(0.3, THEME_COLOR), offset=ft.Offset(0, 4)),
+        )
+        
+        self.content.controls.append(ft.Container(
+            content=ft.Column([
+                ft.Container(height=16),
+                # 密码长度
+                ft.Container(content=ft.Row([
+                    ft.Text("密码长度", size=14, color=self.clr_text, expand=True),
+                    length_text,
+                ], vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(horizontal=4)),
+                length_slider,
+                ft.Container(height=8),
+                # 字符类型选项
+                ft.Container(content=ft.Column([
+                    ft.Row([use_upper, use_lower], spacing=0),
+                    ft.Row([use_digits, use_symbols], spacing=0),
+                ], spacing=0), padding=ft.padding.symmetric(horizontal=4)),
+                ft.Container(height=16),
+                # 结果卡片
+                result_card,
+                ft.Container(height=16),
+                # 生成按钮
+                gen_btn,
+            ], spacing=0),
+            padding=ft.padding.symmetric(horizontal=16),
+        ))
+        self.page.update()
+
+        self.page.update()
+
+    def _show_feedback(self):
+        """问题反馈：填写反馈内容后提交到反馈群"""
+        self._hide_navbar()
+        self.content.controls.clear()
+        self.content.scroll = ft.ScrollMode.AUTO
+        self._feature_page_header("问题反馈")
+        
+        # 反馈类型
+        type_dropdown = ft.Dropdown(
+            label="反馈类型", width=340, border_radius=10,
+            options=[
+                ft.dropdown.Option("bug", "Bug反馈"),
+                ft.dropdown.Option("suggestion", "功能建议"),
+                ft.dropdown.Option("complaint", "投诉"),
+                ft.dropdown.Option("other", "其他问题"),
+            ],
+            value="bug",
+        )
+        
+        # 字数统计
+        char_count = ft.Text("0/20", size=12, color=self.clr_text2)
+        
+        # 反馈内容
+        content_field = ft.TextField(
+            label="问题描述（至少20字）", width=340, border_radius=10,
+            multiline=True, min_lines=6, max_lines=12,
+            hint_text="请详细描述您遇到的问题或建议，至少20个字...",
+            on_change=lambda e: (setattr(char_count, "value", f"{len(e.control.value.strip())}/20"),
+                setattr(char_count, "color", THEME_COLOR if len(e.control.value.strip()) >= 20 else self.clr_text2),
+                self.page.update()),
+        )
+        
+        # QQ号（可选）
+        qq_field = ft.TextField(
+            label="QQ号（选填）", width=340, border_radius=10,
+            hint_text="方便我们联系您",
+            keyboard_type=ft.KeyboardType.NUMBER,
+        )
+        
+        # 邮箱（可选）
+        email_field = ft.TextField(
+            label="邮箱（选填）", width=340, border_radius=10,
+            hint_text="方便我们联系您",
+        )
+        
+        def do_submit(e):
+            feedback_type = type_dropdown.value or "bug"
+            feedback_content = content_field.value.strip()
+            qq = qq_field.value.strip()
+            email = email_field.value.strip()
+            
+            if not feedback_content:
+                self._show_toast("请填写问题描述")
+                return
+            
+            if len(feedback_content) < 20:
+                self._show_toast(f"问题描述至少需要20个字，当前{len(feedback_content)}字")
+                return
+            
+            # 获取当前用户ID
+            user_id = None
+            if self.current_user:
+                user_id = self.current_user.get("id")
+            if not user_id:
+                self._show_toast("请先登录")
+                return
+            
+            # 禁用按钮，显示发送中
+            submit_btn.disabled = True
+            submit_btn.opacity = 0.5
+            self.page.update()
+            self._show_toast("正在提交反馈...")
+            
+            # 构建请求体
+            body = {
+                "user_id": user_id,
+                "feedback_type": feedback_type,
+                "content": feedback_content,
+            }
+            if qq:
+                body["qq"] = qq
+            if email:
+                body["email"] = email
+            
+            # 调用反馈API
+            def submit_thread():
+                try:
+                    success, result = self._remote_api_request("POST", "feedback", body=body)
+                    if success and result.get("ok"):
+                        def on_success():
+                            self._show_toast("反馈提交成功，感谢您的反馈！")
+                            # 自动返回上一页
+                            self.page.run_thread(self._back_to_features)
+                        self.page.run_thread(on_success)
+                    else:
+                        error_msg = result.get("msg", "提交失败") if isinstance(result, dict) else str(result)
+                        def on_fail():
+                            self._show_toast(f"提交失败：{error_msg}")
+                            submit_btn.disabled = False
+                            submit_btn.opacity = 1.0
+                            self.page.update()
+                        self.page.run_thread(on_fail)
+                except Exception as ex:
+                    def on_error():
+                        self._show_toast(f"提交失败：{str(ex)[:30]}")
+                        submit_btn.disabled = False
+                        submit_btn.opacity = 1.0
+                        self.page.update()
+                    self.page.run_thread(on_error)
+            
+            threading.Thread(target=submit_thread, daemon=True).start()
+        
+        # 提交按钮
+        submit_btn = ft.Container(
+            content=ft.Row([
+                ft.Icon(ft.icons.SEND, size=20, color=ft.colors.WHITE),
+                ft.Container(width=8),
+                ft.Text("提交反馈", size=16, weight=ft.FontWeight.W_600, color=ft.colors.WHITE),
+            ], alignment=ft.MainAxisAlignment.CENTER),
+            height=52, bgcolor=THEME_COLOR, border_radius=12,
+            on_click=do_submit, alignment=ft.alignment.center,
+            shadow=ft.BoxShadow(spread_radius=0, blur_radius=12,
+                color=ft.colors.with_opacity(0.3, THEME_COLOR), offset=ft.Offset(0, 4)),
+        )
+        
+        self.content.controls.append(ft.Container(
+            content=ft.Column([
+                ft.Container(height=16),
+                # 说明卡片
+                ft.Container(content=ft.Column([
+                    ft.Row([
+                        ft.Icon(ft.icons.INFO_OUTLINE, size=18, color=THEME_COLOR),
+                        ft.Container(width=8),
+                        ft.Text("您的反馈将提交到反馈群，我们会尽快处理", size=13, color=self.clr_text2),
+                    ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ], spacing=0), padding=ft.padding.symmetric(horizontal=4)),
+                ft.Container(height=16),
+                type_dropdown,
+                ft.Container(height=12),
+                content_field,
+                # 字数统计
+                ft.Container(content=ft.Row([
+                    ft.Container(expand=True),
+                    char_count,
+                ], spacing=0), padding=ft.padding.only(right=4, top=2)),
+                ft.Container(height=12),
+                qq_field,
+                ft.Container(height=12),
+                email_field,
+                ft.Container(height=24),
+                submit_btn,
+            ], spacing=0),
+            padding=ft.padding.symmetric(horizontal=16),
+        ))
+        self.page.update()
+
+        self.page.update()
+
+    def _show_color_tools(self):
+        """颜色工具：颜色拾取 + 屏幕取色（合并页面）"""
+        self._hide_navbar()
+        self.content.controls.clear()
+        self.content.scroll = ft.ScrollMode.AUTO
+        self._feature_page_header("颜色工具")
+
+        cc = {"hex": "#6366F1", "r": 99, "g": 102, "b": 241}
+        history_colors = []
+        history_row = ft.Row([], spacing=6, wrap=True)
+
+        # ===== 颜色拾取部分 =====
+        preview = ft.Container(width=80, height=80, bgcolor="#6366F1", border_radius=40,
+            shadow=ft.BoxShadow(spread_radius=2, blur_radius=16, color=ft.colors.with_opacity(0.4, "#6366F1")))
+        hex_field = ft.TextField(label="HEX", value="#6366F1", text_size=14, height=42,
+            bgcolor=ft.colors.with_opacity(0.75, ft.colors.WHITE), border_color=ft.colors.GREY_400,
+            focused_border_color=THEME_COLOR, color=self.clr_text, content_padding=8)
+        rgb_text = ft.Text("rgb(99, 102, 241)", size=13, color=self.clr_text2, selectable=True)
+
+        r_slider = ft.Slider(min=0, max=255, value=99, active_color=ft.colors.RED,
+            on_change=lambda e: self._color_slider_change(cc, "r", int(e.control.value), preview, hex_field, rgb_text))
+        g_slider = ft.Slider(min=0, max=255, value=102, active_color=ft.colors.GREEN,
+            on_change=lambda e: self._color_slider_change(cc, "g", int(e.control.value), preview, hex_field, rgb_text))
+        b_slider = ft.Slider(min=0, max=255, value=241, active_color=ft.colors.BLUE,
+            on_change=lambda e: self._color_slider_change(cc, "b", int(e.control.value), preview, hex_field, rgb_text))
+
+        def on_hex_submit(e):
+            v = (hex_field.value or "").strip()
+            if not v.startswith("#"): v = "#" + v
+            if len(v) == 7:
+                try:
+                    h = v.lstrip("#")
+                    cc["hex"], cc["r"], cc["g"], cc["b"] = v, int(h[0:2],16), int(h[2:4],16), int(h[4:6],16)
+                    self._color_refresh_ui(cc, preview, hex_field, rgb_text, r_slider, g_slider, b_slider)
+                except: pass
+        hex_field.on_submit = on_hex_submit
+
+        def set_preset(hex_c):
+            def handler(e):
+                h = hex_c.lstrip("#")
+                cc["hex"], cc["r"], cc["g"], cc["b"] = hex_c, int(h[0:2],16), int(h[2:4],16), int(h[4:6],16)
+                self._color_refresh_ui(cc, preview, hex_field, rgb_text, r_slider, g_slider, b_slider)
+            return handler
+
+        def copy_hex(e): self._copy_text(cc["hex"], "HEX已复制")
+        def copy_rgb(e): self._copy_text(rgb_text.value, "RGB已复制")
+
+        # 色板
+        palette_colors = ["#FF0000","#FF7F00","#FFFF00","#00FF00","#00FFFF","#0000FF","#8B00FF",
+                          "#FF1493","#FF69B4","#FFA07A","#FFD700","#98FB98","#87CEEB","#DDA0DD",
+                          "#000000","#333333","#666666","#999999","#CCCCCC","#FFFFFF","#8B4513","#2F4F4F"]
+        palette_rows = []
+        for i in range(0, len(palette_colors), 7):
+            items = []
+            for c in palette_colors[i:i+7]:
+                items.append(ft.Container(width=34, height=34, bgcolor=c, border_radius=8,
+                    border=ft.border.all(1, ft.colors.GREY_300), on_click=set_preset(c), ink=True))
+            palette_rows.append(ft.Row(items, spacing=5, alignment=ft.MainAxisAlignment.CENTER))
+            palette_rows.append(ft.Container(height=5))
+
+        # ===== 屏幕取色部分 =====
+        screen_preview = ft.Container(width=50, height=50, bgcolor="#CCCCCC", border_radius=25,
+            border=ft.border.all(2, ft.colors.GREY_300))
+        screen_hex = ft.Text("#CCCCCC", size=14, weight=ft.FontWeight.BOLD, color=self.clr_text)
+        screen_status = ft.Text("点击按钮开始屏幕取色", size=12, color=self.clr_text2)
+
+        def start_screen_pick(e):
+            try:
+                import tkinter as tk
+                from PIL import ImageGrab
+                root = tk.Tk()
+                root.attributes("-fullscreen", True)
+                root.attributes("-alpha", 0.25)
+                root.configure(cursor="crosshair")
+                root.attributes("-topmost", True)
+                info = tk.Label(root, text="左键点击取色 | 右键/ESC取消", font=("Arial", 16),
+                    bg="black", fg="white", padx=20, pady=10)
+                info.pack(pady=40)
+                result = {"color": None}
+
+                def on_click(event):
+                    if event.num == 1:
+                        try:
+                            img = ImageGrab.grab().load()
+                            r, g, b = img[event.x_root, event.y_root][:3]
+                            result["color"] = (r, g, b)
+                        except: pass
+                        root.destroy()
+                    elif event.num == 3:
+                        root.destroy()
+                def on_escape(event): root.destroy()
+                root.bind("<Button>", on_click)
+                root.bind("<Escape>", on_escape)
+                root.mainloop()
+
+                if result["color"]:
+                    r, g, b = result["color"]
+                    hex_c = "#{:02X}{:02X}{:02X}".format(r, g, b)
+                    screen_preview.bgcolor = hex_c
+                    screen_hex.value = hex_c
+                    screen_status.value = "取色成功！点击复制"
+                    # 同步到颜色拾取
+                    cc["hex"], cc["r"], cc["g"], cc["b"] = hex_c, r, g, b
+                    self._color_refresh_ui(cc, preview, hex_field, rgb_text, r_slider, g_slider, b_slider)
+                    # 历史记录
+                    history_colors.insert(0, hex_c)
+                    if len(history_colors) > 10: history_colors.pop()
+                    history_row.controls.clear()
+                    for hc in history_colors:
+                        history_row.controls.append(ft.Container(
+                            width=32, height=32, bgcolor=hc, border_radius=8,
+                            border=ft.border.all(1, ft.colors.GREY_300),
+                            on_click=lambda e, c=hc: self._copy_text(c, "已复制: "+c), ink=True))
+                    self.page.update()
+                else:
+                    screen_status.value = "已取消取色"
+                    self.page.update()
+            except Exception as ex:
+                screen_status.value = "取色失败: " + str(ex)[:20]
+                self.page.update()
+
+        pick_btn = ft.ElevatedButton(
+            content=ft.Row([ft.Icon(ft.icons.COLORIZE, size=18, color=ft.colors.WHITE),
+                ft.Text("屏幕取色", size=14, weight=ft.FontWeight.W_600, color=ft.colors.WHITE)],
+                alignment=ft.MainAxisAlignment.CENTER, spacing=6),
+            height=46, bgcolor=ft.colors.CYAN, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=12)),
+            on_click=start_screen_pick)
+
+        # ===== 组装页面 =====
+        self.content.controls.append(ft.Container(
+            content=ft.Column([
+                ft.Container(height=12),
+                # 颜色拾取区
+                ft.Container(content=ft.Text("颜色拾取", size=16, weight=ft.FontWeight.BOLD, color=self.clr_text),
+                    padding=ft.padding.symmetric(horizontal=4)),
+                ft.Container(height=8),
+                ft.Row([preview, ft.Container(width=12),
+                    ft.Column([rgb_text, ft.Container(height=4), hex_field], spacing=0, expand=True)],
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ft.Container(height=6),
+                r_slider, g_slider, b_slider,
+                ft.Container(height=4),
+                ft.Row([
+                    ft.ElevatedButton("复制HEX", height=40, bgcolor=THEME_COLOR,
+                        style=ft.ButtonStyle(color=ft.colors.WHITE, shape=ft.RoundedRectangleBorder(radius=10)), on_click=copy_hex),
+                    ft.ElevatedButton("复制RGB", height=40, bgcolor=ft.colors.GREEN,
+                        style=ft.ButtonStyle(color=ft.colors.WHITE, shape=ft.RoundedRectangleBorder(radius=10)), on_click=copy_rgb),
+                ], spacing=8),
+                ft.Container(height=10),
+                ft.Text("色板", size=13, weight=ft.FontWeight.W_600, color=self.clr_text),
+                ft.Container(height=6),
+                *palette_rows,
+                ft.Container(height=16),
+                ft.Container(height=1, bgcolor=self.clr_border),
+                ft.Container(height=12),
+                # 屏幕取色区
+                ft.Container(content=ft.Text("屏幕取色", size=16, weight=ft.FontWeight.BOLD, color=self.clr_text),
+                    padding=ft.padding.symmetric(horizontal=4)),
+                ft.Container(height=8),
+                ft.Row([screen_preview, ft.Container(width=10),
+                    ft.Column([screen_hex, screen_status], spacing=2, expand=True)],
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ft.Container(height=8),
+                pick_btn,
+                ft.Container(height=8),
+                ft.Text("取色历史（点击复制）", size=12, color=self.clr_text2),
+                ft.Container(height=4),
+                history_row,
+                ft.Container(height=20),
+            ], spacing=0),
+            padding=ft.padding.symmetric(horizontal=16),
+        ))
+        self.page.update()
+
+    def _color_slider_change(self, cc, channel, val, preview, hex_field, rgb_text):
+        """RGB滑块变化"""
+        cc[channel] = val
+        cc["hex"] = "#{:02X}{:02X}{:02X}".format(cc["r"], cc["g"], cc["b"])
+        preview.bgcolor = cc["hex"]
+        preview.shadow = ft.BoxShadow(spread_radius=2, blur_radius=16, color=ft.colors.with_opacity(0.4, cc["hex"]))
+        hex_field.value = cc["hex"]
+        rgb_text.value = "rgb({}, {}, {})".format(cc["r"], cc["g"], cc["b"])
+        self.page.update()
+
+    def _color_refresh_ui(self, cc, preview, hex_field, rgb_text, r_slider, g_slider, b_slider):
+        """刷新颜色UI"""
+        preview.bgcolor = cc["hex"]
+        preview.shadow = ft.BoxShadow(spread_radius=2, blur_radius=16, color=ft.colors.with_opacity(0.4, cc["hex"]))
+        hex_field.value = cc["hex"]
+        rgb_text.value = "rgb({}, {}, {})".format(cc["r"], cc["g"], cc["b"])
+        r_slider.value = cc["r"]; g_slider.value = cc["g"]; b_slider.value = cc["b"]
+        self.page.update()
+
+    def _show_color_picker(self):
+        """颜色拾取器：大预览+RGB滑块+HEX输入+渐变色板+预设色板"""
+        self._hide_navbar()
+        self.content.controls.clear()
+        self.content.scroll = ft.ScrollMode.AUTO
+        self._feature_page_header("颜色拾取")
+        cc = {"hex": "#6366F1", "r": 99, "g": 102, "b": 241}
+
+        # 大预览圆
+        preview = ft.Container(width=100, height=100, bgcolor="#6366F1", border_radius=50,
+            shadow=ft.BoxShadow(spread_radius=2, blur_radius=20, color=ft.colors.with_opacity(0.4, "#6366F1")))
+        hex_field = ft.TextField(label="HEX", value="#6366F1", text_size=15,
+            bgcolor=ft.colors.with_opacity(0.75, ft.colors.WHITE), border_color=ft.colors.GREY_400,
+            focused_border_color=THEME_COLOR, color=self.clr_text, content_padding=10, height=44)
+        rgb_text = ft.Text("rgb(99, 102, 241)", size=14, color=self.clr_text2, selectable=True)
+
+        r_slider = ft.Slider(min=0, max=255, value=99, active_color=ft.colors.RED, on_change=lambda e: self._on_color_slider(cc, "r", int(e.control.value), preview, hex_field, rgb_text, r_val, g_val, b_val))
+        g_slider = ft.Slider(min=0, max=255, value=102, active_color=ft.colors.GREEN, on_change=lambda e: self._on_color_slider(cc, "g", int(e.control.value), preview, hex_field, rgb_text, r_val, g_val, b_val))
+        b_slider = ft.Slider(min=0, max=255, value=241, active_color=ft.colors.BLUE, on_change=lambda e: self._on_color_slider(cc, "b", int(e.control.value), preview, hex_field, rgb_text, r_val, g_val, b_val))
+        r_val = ft.Text("99", size=12, color=ft.colors.RED, width=30, text_align=ft.TextAlign.RIGHT)
+        g_val = ft.Text("102", size=12, color=ft.colors.GREEN, width=30, text_align=ft.TextAlign.RIGHT)
+        b_val = ft.Text("241", size=12, color=ft.colors.BLUE, width=30, text_align=ft.TextAlign.RIGHT)
+
+        def on_hex_submit(e):
+            v = (hex_field.value or "").strip()
+            if not v.startswith("#"): v = "#" + v
+            if len(v) == 7:
+                try:
+                    h = v.lstrip("#")
+                    cc["hex"], cc["r"], cc["g"], cc["b"] = v, int(h[0:2],16), int(h[2:4],16), int(h[4:6],16)
+                    self._refresh_color_ui(cc, preview, hex_field, rgb_text, r_slider, g_slider, b_slider, r_val, g_val, b_val)
+                except: pass
+        hex_field.on_submit = on_hex_submit
+
+        def copy_hex(e): self._copy_text(cc["hex"], "HEX已复制")
+        def copy_rgb(e): self._copy_text(rgb_text.value, "RGB已复制")
+
+        # 渐变色板
+        gradient_colors = ["#FF0000","#FF7F00","#FFFF00","#00FF00","#00FFFF","#0000FF","#8B00FF",
+                           "#FF1493","#FF69B4","#FFB6C1","#FFA07A","#FFD700","#98FB98","#87CEEB",
+                           "#DDA0DD","#F0E68C","#D2B48C","#BC8F8F","#708090","#2F4F4F","#191970","#800000"]
+        grad_rows = []
+        for i in range(0, len(gradient_colors), 7):
+            items = []
+            for c in gradient_colors[i:i+7]:
+                items.append(ft.Container(width=36, height=36, bgcolor=c, border_radius=8,
+                    on_click=lambda e, col=c: self._set_color(cc, col, preview, hex_field, rgb_text, r_slider, g_slider, b_slider, r_val, g_val, b_val), ink=True))
+            grad_rows.append(ft.Row(items, spacing=6, alignment=ft.MainAxisAlignment.CENTER))
+            grad_rows.append(ft.Container(height=6))
+
+        # 预设色板
+        preset_colors = ["#000000","#333333","#666666","#999999","#CCCCCC","#FFFFFF",
+                         "#E53935","#FB8C00","#FDD835","#43A047","#00ACC1","#1E88E5","#5E35B1","#D81B60"]
+        preset_rows = []
+        for i in range(0, len(preset_colors), 7):
+            items = []
+            for c in preset_colors[i:i+7]:
+                items.append(ft.Container(width=36, height=36, bgcolor=c, border_radius=8,
+                    border=ft.border.all(1, ft.colors.GREY_300),
+                    on_click=lambda e, col=c: self._set_color(cc, col, preview, hex_field, rgb_text, r_slider, g_slider, b_slider, r_val, g_val, b_val), ink=True))
+            preset_rows.append(ft.Row(items, spacing=6, alignment=ft.MainAxisAlignment.CENTER))
+            preset_rows.append(ft.Container(height=6))
+
+        self.content.controls.append(ft.Container(
+            content=ft.Column([
+                ft.Container(height=12),
+                ft.Container(content=preview, alignment=ft.alignment.center),
+                ft.Container(height=12),
+                ft.Container(content=rgb_text, alignment=ft.alignment.center),
+                ft.Container(height=12),
+                hex_field,
+                ft.Container(height=6),
+                ft.Row([ft.Text("R", size=12, color=ft.colors.RED, width=12), r_slider, r_val], spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ft.Row([ft.Text("G", size=12, color=ft.colors.GREEN, width=12), g_slider, g_val], spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ft.Row([ft.Text("B", size=12, color=ft.colors.BLUE, width=12), b_slider, b_val], spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ft.Container(height=8),
+                ft.Row([
+                    ft.Container(content=ft.Text("复制HEX", size=13, weight=ft.FontWeight.W_600, color=ft.colors.WHITE),
+                        expand=True, height=42, bgcolor=THEME_COLOR, border_radius=10, alignment=ft.alignment.center, on_click=copy_hex, ink=True),
+                    ft.Container(content=ft.Text("复制RGB", size=13, weight=ft.FontWeight.W_600, color=ft.colors.WHITE),
+                        expand=True, height=42, bgcolor=ft.colors.GREEN, border_radius=10, alignment=ft.alignment.center, on_click=copy_rgb, ink=True),
+                ], spacing=8),
+                ft.Container(height=16),
+                ft.Text("渐变色板", size=14, weight=ft.FontWeight.W_600, color=self.clr_text),
+                ft.Container(height=8),
+                *grad_rows,
+                ft.Container(height=8),
+                ft.Text("常用色板", size=14, weight=ft.FontWeight.W_600, color=self.clr_text),
+                ft.Container(height=8),
+                *preset_rows,
+                ft.Container(height=20),
+            ], spacing=0),
+            padding=ft.padding.symmetric(horizontal=16),
+        ))
+        self.page.update()
+
+    def _on_color_slider(self, cc, channel, val, preview, hex_field, rgb_text, r_val, g_val, b_val):
+        """RGB滑块变化时更新颜色"""
+        cc[channel] = val
+        cc["hex"] = "#{:02X}{:02X}{:02X}".format(cc["r"], cc["g"], cc["b"])
+        preview.bgcolor = cc["hex"]
+        preview.shadow = ft.BoxShadow(spread_radius=2, blur_radius=20, color=ft.colors.with_opacity(0.4, cc["hex"]))
+        hex_field.value = cc["hex"]
+        rgb_text.value = "rgb({}, {}, {})".format(cc["r"], cc["g"], cc["b"])
+        r_val.value = str(cc["r"]); g_val.value = str(cc["g"]); b_val.value = str(cc["b"])
+        self.page.update()
+
+    def _set_color(self, cc, hex_color, preview, hex_field, rgb_text, r_slider, g_slider, b_slider, r_val, g_val, b_val):
+        """点击色板设置颜色"""
+        h = hex_color.lstrip("#")
+        cc["hex"], cc["r"], cc["g"], cc["b"] = hex_color, int(h[0:2],16), int(h[2:4],16), int(h[4:6],16)
+        self._refresh_color_ui(cc, preview, hex_field, rgb_text, r_slider, g_slider, b_slider, r_val, g_val, b_val)
+
+    def _refresh_color_ui(self, cc, preview, hex_field, rgb_text, r_slider, g_slider, b_slider, r_val, g_val, b_val):
+        """刷新所有颜色相关UI"""
+        preview.bgcolor = cc["hex"]
+        preview.shadow = ft.BoxShadow(spread_radius=2, blur_radius=20, color=ft.colors.with_opacity(0.4, cc["hex"]))
+        hex_field.value = cc["hex"]
+        rgb_text.value = "rgb({}, {}, {})".format(cc["r"], cc["g"], cc["b"])
+        r_slider.value = cc["r"]; g_slider.value = cc["g"]; b_slider.value = cc["b"]
+        r_val.value = str(cc["r"]); g_val.value = str(cc["g"]); b_val.value = str(cc["b"])
+        self.page.update()
+
+    def _show_screen_color_picker(self):
+        """屏幕取色器：悬浮窗吸取屏幕任意位置颜色"""
+        self._hide_navbar()
+        self.content.controls.clear()
+        self.content.scroll = ft.ScrollMode.AUTO
+        self._feature_page_header("屏幕取色")
+
+        picked_preview = ft.Container(width=80, height=80, bgcolor="#CCCCCC", border_radius=16,
+            border=ft.border.all(2, ft.colors.GREY_300))
+        picked_hex = ft.Text("#CCCCCC", size=18, weight=ft.FontWeight.BOLD, color=self.clr_text)
+        picked_rgb = ft.Text("rgb(204, 204, 204)", size=13, color=self.clr_text2)
+        status_text = ft.Text("点击下方按钮开始取色", size=13, color=self.clr_text2)
+        history_colors = []
+        history_row = ft.Row([], spacing=6, wrap=True)
+
+        def start_picker(e):
+            try:
+                import tkinter as tk
+                from PIL import ImageGrab
+                root = tk.Tk()
+                root.attributes("-fullscreen", True)
+                root.attributes("-alpha", 0.3)
+                root.configure(cursor="crosshair")
+                root.attributes("-topmost", True)
+
+                info_label = tk.Label(root, text="点击任意位置取色 | 右键或ESC取消",
+                    font=("Arial", 14), bg="black", fg="white", padx=20, pady=10)
+                info_label.pack(pady=50)
+
+                result = {"color": None, "x": 0, "y": 0}
+
+                def on_click(event):
+                    if event.num == 1:  # 左键取色
+                        result["x"], result["y"] = event.x_root, event.y_root
+                        try:
+                            img = ImageGrab.grab().load()
+                            r, g, b = img[event.x_root, event.y_root][:3]
+                            result["color"] = (r, g, b)
+                        except: pass
+                        root.destroy()
+                    elif event.num == 3:  # 右键取消
+                        root.destroy()
+
+                def on_escape(event):
+                    root.destroy()
+
+                root.bind("<Button>", on_click)
+                root.bind("<Escape>", on_escape)
+                root.mainloop()
+
+                if result["color"]:
+                    r, g, b = result["color"]
+                    hex_c = "#{:02X}{:02X}{:02X}".format(r, g, b)
+                    picked_preview.bgcolor = hex_c
+                    picked_hex.value = hex_c
+                    picked_rgb.value = "rgb({}, {}, {})".format(r, g, b)
+                    status_text.value = "取色成功！位置: ({}, {})".format(result["x"], result["y"])
+                    # 添加到历史
+                    history_colors.insert(0, hex_c)
+                    if len(history_colors) > 12: history_colors.pop()
+                    history_row.controls.clear()
+                    for hc in history_colors:
+                        history_row.controls.append(ft.Container(
+                            width=36, height=36, bgcolor=hc, border_radius=8,
+                            border=ft.border.all(1, ft.colors.GREY_300),
+                            on_click=lambda e, c=hc: self._copy_text(c, "已复制: "+c), ink=True,
+                            tooltip=hc))
+                    self.page.update()
+                else:
+                    status_text.value = "已取消取色"
+                    self.page.update()
+            except Exception as ex:
+                status_text.value = "取色失败: " + str(ex)[:30]
+                self.page.update()
+
+        def copy_picked(e):
+            if picked_hex.value and picked_hex.value != "#CCCCCC":
+                self._copy_text(picked_hex.value, "颜色已复制")
+
+        start_btn = ft.Container(
+            content=ft.Row([ft.Icon(ft.icons.COLORIZE, size=20, color=ft.colors.WHITE),
+                ft.Text("开始屏幕取色", size=16, weight=ft.FontWeight.W_600, color=ft.colors.WHITE)],
+                alignment=ft.MainAxisAlignment.CENTER, spacing=8),
+            height=52, bgcolor=THEME_COLOR, border_radius=14,
+            alignment=ft.alignment.center, on_click=start_picker, ink=True,
+            shadow=ft.BoxShadow(spread_radius=0, blur_radius=10, color=ft.colors.with_opacity(0.3, THEME_COLOR)),
+        )
+        copy_btn = ft.Container(
+            content=ft.Row([ft.Icon(ft.icons.COPY, size=18, color=ft.colors.WHITE),
+                ft.Text("复制颜色", size=15, weight=ft.FontWeight.W_600, color=ft.colors.WHITE)],
+                alignment=ft.MainAxisAlignment.CENTER, spacing=6),
+            height=46, bgcolor=ft.colors.GREEN, border_radius=12,
+            alignment=ft.alignment.center, on_click=copy_picked, ink=True,
+        )
+
+        self.content.controls.append(ft.Container(
+            content=ft.Column([
+                ft.Container(height=16),
+                ft.Container(content=picked_preview, alignment=ft.alignment.center),
+                ft.Container(height=12),
+                ft.Container(content=picked_hex, alignment=ft.alignment.center),
+                ft.Container(height=4),
+                ft.Container(content=picked_rgb, alignment=ft.alignment.center),
+                ft.Container(height=6),
+                ft.Container(content=status_text, alignment=ft.alignment.center),
+                ft.Container(height=20),
+                start_btn,
+                ft.Container(height=10),
+                copy_btn,
+                ft.Container(height=20),
+                ft.Text("历史颜色（点击复制）", size=14, weight=ft.FontWeight.W_600, color=self.clr_text),
+                ft.Container(height=8),
+                history_row,
+                ft.Container(height=20),
+                ft.Container(content=ft.Column([
+                    ft.Text("使用说明", size=13, weight=ft.FontWeight.W_600, color=self.clr_text),
+                    ft.Container(height=6),
+                    ft.Text('1. 点击开始屏幕取色按钮', size=12, color=self.clr_text2),
+                    ft.Text("2. 屏幕变半透明，鼠标变成十字", size=12, color=self.clr_text2),
+                    ft.Text("3. 左键点击要取色的位置", size=12, color=self.clr_text2),
+                    ft.Text("4. 右键或ESC取消取色", size=12, color=self.clr_text2),
+                ], spacing=0), padding=12, bgcolor=self.clr_card, border_radius=12),
+                ft.Container(height=20),
+            ], spacing=0),
+            padding=ft.padding.symmetric(horizontal=16),
+        ))
+        self.page.update()
+
+    def render_cloud_drive_page(self):
+        """网盘页面 - 远程文件存储与管理（先渲染UI，再后台异步获取数据）"""
+        self._show_navbar()  # 主页面显示导航栏
+        self.content.controls.clear()
+        self.content.scroll = None  # 外层不滚动，用内层Stack
+
+        # 内层内容Column（可滚动）
+        inner_content = ft.Column([], spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
+
+        # 顶部标题
+        inner_content.controls.append(ft.Container(
+            content=ft.Row([
+                ft.Text("网盘", size=28, weight=ft.FontWeight.BOLD, expand=True, color=self.clr_text),
+            ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.padding.only(20, 50, 12, 10), bgcolor=self.clr_bg,
+        ))
+        inner_content.controls.append(ft.Container(height=1, bgcolor=self.clr_border))
+
+        # 我的网盘进度条卡片（先用默认值，后面异步更新）
+        self._cloud_used_text = ft.Text("0.0 MB / 5 GB", size=12, color=self.clr_text2)
+        self._cloud_pct_text = ft.Text("已使用 0.0%，剩余 5120 MB", size=11, color=self.clr_text2)
+        self._cloud_progress = ft.ProgressBar(value=0, width=None, color=THEME_COLOR,
+            bgcolor=ft.colors.with_opacity(0.15, THEME_COLOR), border_radius=4)
+        inner_content.controls.append(ft.Container(
+            content=ft.Column([
+                ft.Row([
+                    ft.Icon(ft.icons.CLOUD, size=20, color=THEME_COLOR),
+                    ft.Container(width=8),
+                    ft.Text("我的网盘", size=16, weight=ft.FontWeight.W_600, color=self.clr_text, expand=True),
+                    self._cloud_used_text,
+                ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ft.Container(height=10),
+                self._cloud_progress,
+                ft.Container(height=6),
+                self._cloud_pct_text,
+            ], spacing=0),
+            bgcolor=self.clr_card, border_radius=14, padding=ft.padding.all(16), margin=ft.padding.only(16, 12, 16, 0),
+        ))
+
+        # 快捷入口小卡片（一行两个）
+        inner_content.controls.append(ft.Container(
+            content=ft.Row([
+                ft.Container(
+                    content=ft.Column([
+                        ft.Icon(ft.icons.CLOUD_OUTLINED, size=28, color=THEME_COLOR),
+                        ft.Container(height=8),
+                        ft.Text("我的资源", size=13, weight=ft.FontWeight.W_600, color=self.clr_text),
+                    ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER, alignment=ft.MainAxisAlignment.CENTER),
+                    expand=True, height=90, bgcolor=self.clr_card, border_radius=12,
+                    alignment=ft.alignment.center, on_click=lambda e: self._show_my_resources(),
+                    ink=True,
+                ),
+                ft.Container(width=12),
+                ft.Container(
+                    content=ft.Column([
+                        ft.Icon(ft.icons.HOURGLASS_EMPTY_OUTLINED, size=28, color=ft.colors.GREY_400),
+                        ft.Container(height=8),
+                        ft.Text("暂存", size=13, weight=ft.FontWeight.W_600, color=self.clr_text2),
+                    ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER, alignment=ft.MainAxisAlignment.CENTER),
+                    expand=True, height=90, bgcolor=self.clr_card, border_radius=12,
+                    alignment=ft.alignment.center, on_click=lambda e: self._show_toast("功能暂存中"),
+                    ink=True,
+                ),
+            ], spacing=0),
+            margin=ft.padding.only(16, 12, 16, 0),
+        ))
+
+        # 数据统计标题
+        inner_content.controls.append(ft.Container(
+            content=ft.Text("数据统计", size=14, weight=ft.FontWeight.W_600, color=self.clr_text2),
+            padding=ft.padding.only(16, 16, 16, 8),
+        ))
+
+        # 数据统计四个卡片（2x2，跟"我的资源"卡片一样大）
+        self._cloud_stats_view = ft.Column([], spacing=0)
+        self._stats_view_count = ft.Text("0", size=16, weight=ft.FontWeight.BOLD, color=self.clr_text)
+        self._stats_download_count = ft.Text("0", size=16, weight=ft.FontWeight.BOLD, color=self.clr_text)
+        # 第一行
+        self._cloud_stats_view.controls.append(ft.Container(
+            content=ft.Row([
+                ft.Container(
+                    content=ft.Column([
+                        ft.Icon(ft.icons.VISIBILITY_OUTLINED, size=26, color=ft.colors.BLUE),
+                        ft.Container(height=6),
+                        ft.Text("浏览人数", size=12, color=self.clr_text2),
+                        self._stats_view_count,
+                    ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER, alignment=ft.MainAxisAlignment.CENTER),
+                    expand=True, height=90, bgcolor=self.clr_card, border_radius=12,
+                    alignment=ft.alignment.center, on_click=lambda e: self._show_cloud_stats_detail("浏览人数"), ink=True,
+                ),
+                ft.Container(width=12),
+                ft.Container(
+                    content=ft.Column([
+                        ft.Icon(ft.icons.DOWNLOAD_OUTLINED, size=26, color=ft.colors.GREEN),
+                        ft.Container(height=6),
+                        ft.Text("下载次数", size=12, color=self.clr_text2),
+                        self._stats_download_count,
+                    ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER, alignment=ft.MainAxisAlignment.CENTER),
+                    expand=True, height=90, bgcolor=self.clr_card, border_radius=12,
+                    alignment=ft.alignment.center, on_click=lambda e: self._show_cloud_stats_detail("下载次数"), ink=True,
+                ),
+            ], spacing=0),
+            margin=ft.padding.only(16, 0, 16, 0),
+        ))
+        self._cloud_stats_view.controls.append(ft.Container(height=12))
+        # 第二行
+        self._cloud_stats_view.controls.append(ft.Container(
+            content=ft.Row([
+                ft.Container(
+                    content=ft.Column([
+                        ft.Icon(ft.icons.ADD_OUTLINED, size=26, color=self.clr_text2),
+                        ft.Container(height=6),
+                        ft.Text("待添加", size=12, color=self.clr_text2),
+                        ft.Text("-", size=16, weight=ft.FontWeight.BOLD, color=self.clr_text2),
+                    ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER, alignment=ft.MainAxisAlignment.CENTER),
+                    expand=True, height=90, bgcolor=self.clr_card, border_radius=12,
+                    alignment=ft.alignment.center,
+                ),
+                ft.Container(width=12),
+                ft.Container(
+                    content=ft.Column([
+                        ft.Icon(ft.icons.ADD_OUTLINED, size=26, color=self.clr_text2),
+                        ft.Container(height=6),
+                        ft.Text("待添加", size=12, color=self.clr_text2),
+                        ft.Text("-", size=16, weight=ft.FontWeight.BOLD, color=self.clr_text2),
+                    ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER, alignment=ft.MainAxisAlignment.CENTER),
+                    expand=True, height=90, bgcolor=self.clr_card, border_radius=12,
+                    alignment=ft.alignment.center,
+                ),
+            ], spacing=0),
+            margin=ft.padding.only(16, 0, 16, 0),
+        ))
+        inner_content.controls.append(self._cloud_stats_view)
+        inner_content.controls.append(ft.Container(height=80))
+
+        # 网盘主页不显示加号，加号在「我的资源」页面显示
+        self.content.controls.append(inner_content)
+
+        # 立即更新UI（先显示出来）
+        try:
+            self.page.update()
+        except Exception as e:
+            print(f"网盘页面UI更新失败: {e}")
+
+        # ===== 第二步：后台异步获取远程数据，获取完成后更新UI =====
+        def _load_cloud_data_async():
+            try:
+                # 1. 获取已用空间
+                try:
+                    total_gb = 5.0
+                    used_mb = self._get_cloud_used_mb()
+                    used_pct = min(100, used_mb / (total_gb * 1024) * 100)
+                    self._cloud_used_text.value = f"{used_mb:.1f} MB / {total_gb:.0f} GB"
+                    self._cloud_pct_text.value = f"已使用 {used_pct:.1f}%，剩余 {(total_gb*1024-used_mb):.0f} MB"
+                    self._cloud_progress.value = used_pct / 100
+                except Exception as e:
+                    print(f"获取网盘空间失败: {e}")
+
+                # 2. 获取网盘统计数据（自己计算：把所有网盘的浏览/下载次数加起来，跟详情页口径一致）
+                try:
+                    total_view = 0
+                    total_download = 0
+                    if self.current_user:
+                        user_id = self.current_user.get("id", "")
+                        ok, result = self._remote_api_request("GET", "user-folders", params={"user_id": user_id, "parent_id": 0})
+                        if ok and result:
+                            folders = result.get("folders", [])
+                            for folder in folders:
+                                total_view += folder.get("view_count", 0)
+                                total_download += folder.get("download_count", 0)
+                    self._stats_view_count.value = str(total_view)
+                    self._stats_download_count.value = str(total_download)
+                except Exception as e:
+                    print(f"获取网盘统计失败: {e}")
+
+                try:
+                    self.page.update()
+                except Exception as e:
+                    print(f"网盘页面异步更新失败: {e}")
+            except Exception as e:
+                print(f"网盘数据异步加载失败: {e}")
+
+        try:
+            import threading
+            threading.Thread(target=_load_cloud_data_async, daemon=True).start()
+        except Exception as e:
+            print(f"启动网盘数据加载线程失败: {e}")
+
+
+    def _show_my_resources(self, folder_id=0, folder_name="我的资源"):
+        """显示我的资源页面"""
+        self.current_folder_id = folder_id
+        self.content.controls.clear()
+        self.content.scroll = ft.ScrollMode.AUTO
+        self._hide_navbar()
+        is_root = folder_id == 0
+        title_text = folder_name if not is_root else "我的资源"
+        back_action = lambda e: self._back_to_parent_folder() if not is_root else self._back_to_cloud_drive()
+        
+        # 标题栏（包含路径）
+        title_row = [
+            ft.IconButton(ft.icons.ARROW_BACK, icon_size=24, icon_color=self.clr_text, on_click=back_action),
+            ft.Container(width=8),
+        ]
+        # 标题+路径（垂直排列）
+        title_col_items = [ft.Text(title_text, size=20, weight=ft.FontWeight.BOLD, color=self.clr_text)]
+        if not is_root and self.folder_path:
+            path_text = " / ".join([f[1] for f in self.folder_path])
+            title_col_items.append(ft.Text(path_text, size=11, color=self.clr_text2))
+        title_row.append(ft.Column(title_col_items, spacing=2, expand=True))
+        title_row.append(ft.IconButton(ft.icons.ADD_CIRCLE, icon_size=28, icon_color=THEME_COLOR, on_click=lambda e: self._show_cloud_upload_menu()))
+        
+        self.content.controls.append(ft.Container(
+            content=ft.Row(title_row, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.padding.only(12, 50, 12, 10), bgcolor=self.clr_bg,
+        ))
+        self.content.controls.append(ft.Container(height=1, bgcolor=self.clr_border))
+        
+        content_area = ft.Column([], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER)
+        self.content.controls.append(content_area)
+        self.content.controls.append(ft.Container(height=20))
+        self.page.floating_action_button = None
+        self.page.update()
+        
+        # 先用缓存快速显示（如果有缓存）
+        cached_files = None
+        try:
+            if is_root and hasattr(self, '_cached_cloud_files') and self._cached_cloud_files:
+                cached_files = self._cached_cloud_files
+        except:
+            pass
+        
+        if cached_files:
+            # 有缓存，直接显示缓存
+            def render_cached():
+                content_area.controls.clear()
+                for f in cached_files:
+                    is_folder = f.get("type") == "folder"
+                    if is_root and is_folder:
+                        icon_color = ft.colors.BLUE
+                        icon = ft.icons.CLOUD_OUTLINED
+                        info_text = f.get("info", "网盘").replace("文件夹", "网盘")
+                        raw_name = f.get("name", "未命名")
+                        display_name = raw_name if raw_name.startswith("我的云盘") else f"我的云盘-{raw_name}"
+                    else:
+                        icon_color = ft.colors.BLUE if is_folder else ft.colors.ORANGE
+                        icon = ft.icons.FOLDER if is_folder else ft.icons.INSERT_DRIVE_FILE_OUTLINED
+                        info_text = f.get("info", "")
+                        display_name = f.get("name", "未命名")
+                    on_click = None
+                    if is_folder:
+                        on_click = lambda e, fi=f: self._open_folder(fi)
+                    content_area.controls.append(ft.Container(
+                        content=ft.Row([
+                            ft.Container(content=ft.Icon(icon, size=22, color=ft.colors.WHITE), width=40, height=40, bgcolor=icon_color, border_radius=10, alignment=ft.alignment.center),
+                            ft.Container(width=10),
+                            ft.Column([
+                                ft.Text(display_name, size=14, weight=ft.FontWeight.W_500, color=self.clr_text, overflow=ft.TextOverflow.ELLIPSIS),
+                                ft.Container(height=2),
+                                ft.Text(info_text, size=11, color=self.clr_text2),
+                            ], spacing=0, expand=True),
+                            ft.PopupMenuButton(items=self._build_cloud_menu_items(f, is_root), icon_color=self.clr_text2),
+                        ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                        bgcolor=self.clr_card, border_radius=12, padding=ft.padding.all(12), margin=ft.padding.only(16, 4, 16, 4),
+                        on_click=on_click, ink=True,
+                    ))
+                self.page.update()
+            try:
+                render_cached()
+            except:
+                pass
+        else:
+            # 没有缓存，显示加载中
+            loading_box = ft.Container(
+                content=ft.Column([
+                    ft.ProgressRing(width=40, height=40, color=THEME_COLOR),
+                    ft.Container(height=12),
+                    ft.Text("加载中...", size=14, color=self.clr_text2),
+                ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                padding=ft.padding.only(top=150), alignment=ft.alignment.center,
+            )
+            content_area.controls.append(loading_box)
+            self.page.update()
+        
+        # 后台获取最新数据
+        def load_files():
+            try:
+                files = self._get_cloud_files(folder_id=folder_id, use_cache=False)
+                def update_ui():
+                    content_area.controls.clear()
+                    if not files:
+                        empty_icon = ft.icons.CLOUD_OUTLINED if is_root else ft.icons.FOLDER_OFF_OUTLINED
+                        empty_text = "暂无网盘" if is_root else "暂无文件"
+                        empty_hint = "点击右上角加号创建我的网盘" if is_root else "点击右上角加号上传文件或创建文件夹"
+                        content_area.controls.append(ft.Container(
+                            content=ft.Column([
+                                ft.Icon(empty_icon, size=64, color=self.clr_text2),
+                                ft.Container(height=12),
+                                ft.Text(empty_text, size=16, color=self.clr_text2, weight=ft.FontWeight.W_500),
+                                ft.Container(height=6),
+                                ft.Text(empty_hint, size=13, color=self.clr_text2),
+                            ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                            padding=ft.padding.only(top=120), alignment=ft.alignment.center,
+                        ))
+                    else:
+                        for f in files:
+                            is_folder = f.get("type") == "folder"
+                            if is_root and is_folder:
+                                icon_color = ft.colors.BLUE
+                                icon = ft.icons.CLOUD_OUTLINED
+                                info_text = f.get("info", "网盘").replace("文件夹", "网盘")
+                                raw_name = f.get("name", "未命名")
+                                display_name = raw_name if raw_name.startswith("我的云盘") else f"我的云盘-{raw_name}"
+                            else:
+                                icon_color = ft.colors.BLUE if is_folder else ft.colors.ORANGE
+                                icon = ft.icons.FOLDER if is_folder else ft.icons.INSERT_DRIVE_FILE_OUTLINED
+                                info_text = f.get("info", "")
+                                display_name = f.get("name", "未命名")
+                            on_click = None
+                            if is_folder:
+                                on_click = lambda e, fi=f: self._open_folder(fi)
+                            content_area.controls.append(ft.Container(
+                                content=ft.Row([
+                                    ft.Container(content=ft.Icon(icon, size=22, color=ft.colors.WHITE), width=40, height=40, bgcolor=icon_color, border_radius=10, alignment=ft.alignment.center),
+                                    ft.Container(width=10),
+                                    ft.Column([
+                                        ft.Text(display_name, size=14, weight=ft.FontWeight.W_500, color=self.clr_text, overflow=ft.TextOverflow.ELLIPSIS),
+                                        ft.Container(height=2),
+                                        ft.Text(info_text, size=11, color=self.clr_text2),
+                                    ], spacing=0, expand=True),
+                                    ft.PopupMenuButton(items=self._build_cloud_menu_items(f, is_root), icon_color=self.clr_text2),
+                                ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                                bgcolor=self.clr_card, border_radius=12, padding=ft.padding.all(12), margin=ft.padding.only(16, 4, 16, 4),
+                                on_click=on_click, ink=True,
+                            ))
+                    self.page.update()
+                try:
+                    update_ui()
+                except:
+                    self.page.run_thread(update_ui)
+            except Exception as e:
+                print(f"加载失败: {e}")
+        threading.Thread(target=load_files, daemon=True).start()
+
+
+    def _show_cloud_stats(self, stat_type):
+        """显示网盘统计详情（UI，API待对接）"""
+        try:
+            dlg = ft.AlertDialog(
+                title=ft.Text(f"{stat_type}详情", size=18, weight=ft.FontWeight.BOLD),
+                content=ft.Container(
+                    content=ft.Column([
+                        ft.Icon(ft.icons.BAR_CHART_OUTLINED, size=48, color=self.clr_text2),
+                        ft.Container(height=12),
+                        ft.Text(f"暂无{stat_type}数据", size=14, color=self.clr_text2),
+                        ft.Container(height=6),
+                        ft.Text("API待对接", size=12, color=self.clr_text2),
+                    ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                    width=250, height=180, alignment=ft.alignment.center,
+                ),
+                actions=[ft.TextButton("关闭", on_click=lambda e: self._close_dialog(dlg))],
+            )
+            self.page.dialog = dlg
+            self.page.dialog.open = True
+            self.page.update()
+        except Exception as e:
+            self._show_toast("显示统计失败：" + str(e))
+
+    def _menu_action(self, action_func):
+        """菜单项点击后延迟执行，解决PopupMenu第一次点击不生效的问题"""
+        import threading, time
+        def run():
+            time.sleep(0.15)  # 等待菜单关闭动画完成
+            try:
+                self.page.run_thread(action_func)
+            except Exception:
+                pass
+        threading.Thread(target=run, daemon=True).start()
+
+    def _build_cloud_menu_items(self, fi, is_root):
+        """构建网盘/文件的菜单项"""
+        items = [
+            ft.PopupMenuItem(icon=ft.icons.SHARE_OUTLINED, text="分享链接", on_click=lambda e, item=fi: self._menu_action(lambda: self._share_cloud_file(item))),
+        ]
+        # 根目录的网盘（文件夹）添加设置公告选项
+        if is_root and fi.get("type") == "folder":
+            items.append(ft.PopupMenuItem(icon=ft.icons.LINK, text="链接设置", on_click=lambda e, item=fi: self._menu_action(lambda: self._set_cloud_notice(item))))
+        items.append(ft.PopupMenuItem(icon=ft.icons.DELETE_OUTLINE, text="删除", on_click=lambda e, item=fi: self._menu_action(lambda: self._delete_cloud_file(item))))
+        return items
+
+    def _set_cloud_notice(self, fi):
+        """链接设置（网盘名字+公告+提取码）"""
+        try:
+            folder_name = fi.get("name", "网盘")
+            folder_id = fi.get("id", "")
+            share_code = fi.get("share_code", fi.get("code", ""))
+            
+            # 网盘名字输入框
+            name_field = ft.TextField(label="网盘名称", width=280, border_radius=8,
+                value=folder_name, hint_text="正在获取...")
+            # 公告内容输入框
+            notice_field = ft.TextField(label="公告内容", width=280, border_radius=8, multiline=True, min_lines=3, max_lines=5,
+                hint_text="正在获取...")
+            # 提取码输入框（四位，留空则不设置）
+            code_field = ft.TextField(label="提取码（留空则不设置）", width=280, border_radius=8,
+                hint_text="输入4位提取码", max_length=4,
+                counter_text="0/4")
+            
+            def on_save(e):
+                new_name = name_field.value.strip()
+                notice_text = notice_field.value.strip()
+                extract_code = code_field.value.strip() if code_field.value else ""
+                if not new_name:
+                    self._show_toast("网盘名称不能为空")
+                    return
+                if extract_code and len(extract_code) != 4:
+                    self._show_toast("提取码必须是4位")
+                    return
+                if not self.current_user:
+                    self._show_toast("请先登录")
+                    return
+                # 关闭弹窗，显示保存中
+                self._close_dialog(dlg)
+                self._show_toast("正在保存...")
+                # 后台保存
+                def do_save():
+                    try:
+                        try:
+                            user_id = int(self.current_user.get("id", 0))
+                        except (ValueError, TypeError):
+                            user_id = self.current_user.get("id", "")
+                        # 调用设置下载页信息API
+                        ok, result = self._remote_api_request("PUT", f"download-page/{share_code}",
+                            body={"user_id": user_id, "name": new_name, "notice": notice_text, "extract_code": extract_code})
+                        if ok and result and result.get("ok"):
+                            # 保存成功，清除缓存，刷新当前页面
+                            self._cached_cloud_files = None
+                            import threading
+                            threading.Thread(target=self._refresh_cloud_cache, daemon=True).start()
+                            # 刷新当前我的资源页面
+                            try:
+                                self._show_my_resources(folder_id=self.current_folder_id,
+                                    folder_name=self.folder_path[-1][1] if self.folder_path else "我的资源")
+                            except:
+                                pass
+                            self._show_toast("保存成功")
+                        else:
+                            error_msg = result.get("msg", "保存失败") if isinstance(result, dict) else "保存失败"
+                            self._show_toast("保存失败：" + str(error_msg))
+                    except Exception as ex:
+                        self._show_toast("保存失败：" + str(ex)[:20])
+                import threading
+                threading.Thread(target=do_save, daemon=True).start()
+            
+            dlg = ft.AlertDialog(
+                title=ft.Text("链接设置", size=18, weight=ft.FontWeight.BOLD),
+                content=ft.Column([
+                    name_field,
+                    ft.Container(height=10),
+                    notice_field,
+                    ft.Container(height=10),
+                    code_field,
+                ], spacing=0, tight=True, width=280),
+                actions=[
+                    ft.TextButton("取消", on_click=lambda e: self._close_dialog(dlg)),
+                    ft.TextButton("保存", on_click=on_save),
+                ],
+            )
+            # 可靠地显示对话框：先清空旧dialog，再设置新的
+            try:
+                if self.page.dialog:
+                    self.page.dialog.open = False
+                self.page.dialog = None
+                self.page.update()
+            except:
+                pass
+            import time as _t
+            _t.sleep(0.05)
+            self.page.dialog = dlg
+            dlg.open = True
+            self.page.update()
+            
+            # 后台获取当前名字和公告
+            def load_current_info():
+                try:
+                    info = self._get_folder_download_page_info(share_code)
+                    def update_fields():
+                        if info:
+                            if info.get("notice"):
+                                notice_field.value = info["notice"]
+                                notice_field.hint_text = "输入公告内容"
+                            else:
+                                notice_field.hint_text = "输入公告内容（当前无公告）"
+                            if info.get("extract_code"):
+                                code_field.value = info["extract_code"]
+                                code_field.hint_text = "已设置提取码"
+                                code_field.counter_text = f"{len(info['extract_code'])}/4"
+                            else:
+                                code_field.hint_text = "输入4位提取码（留空则不设置）"
+                                code_field.counter_text = "0/4"
+                        else:
+                            notice_field.hint_text = "输入公告内容"
+                            code_field.hint_text = "输入4位提取码（留空则不设置）"
+                        name_field.hint_text = "输入网盘名称"
+                        self.page.update()
+                    self.page.run_thread(update_fields)
+                except Exception as e:
+                    print(f"获取下载页信息失败: {e}")
+                    def update_hint():
+                        name_field.hint_text = "输入网盘名称"
+                        notice_field.hint_text = "输入公告内容"
+                        self.page.update()
+                    self.page.run_thread(update_hint)
+            
+            import threading
+            threading.Thread(target=load_current_info, daemon=True).start()
+        except Exception as e:
+            self._show_toast("链接设置失败：" + str(e))
+
+    def _open_folder(self, folder_info):
+        """打开文件夹，进入子目录"""
+        folder_id = folder_info.get("id")
+        folder_name = folder_info.get("name", "文件夹")
+        if folder_id:
+            # 记录路径
+            self.folder_path.append((folder_id, folder_name))
+            self._show_my_resources(folder_id=folder_id, folder_name=folder_name)
+
+    def _back_to_parent_folder(self):
+        """返回上级文件夹"""
+        if self.folder_path:
+            self.folder_path.pop()
+        if self.folder_path:
+            parent_id, parent_name = self.folder_path[-1]
+            self._show_my_resources(folder_id=parent_id, folder_name=parent_name)
+        else:
+            self._show_my_resources(folder_id=0, folder_name="我的资源")
+
+
+    def _back_to_cloud_drive(self):
+        """返回网盘主页"""
+        self.folder_path = []
+        self.current_folder_id = 0
+        self._show_navbar()
+        self.render_cloud_drive_page()
+
+    def _hide_navbar(self):
+        """隐藏底部导航栏（进入子页面时调用）"""
+        if hasattr(self, '_navbar_area') and self._navbar_area:
+            self._navbar_area.visible = False
+        self.page.floating_action_button = None
+
+    def _show_navbar(self):
+        """显示底部导航栏（从子页面返回时调用）"""
+        if hasattr(self, '_navbar_area') and self._navbar_area:
+            self._navbar_area.visible = True
+        self.page.floating_action_button = None
+
+
+    def _share_cloud_file(self, fi):
+        """分享文件或文件夹（调用远程API获取分享链接）"""
+        if not self.current_user:
+            return
+        try:
+            user_id = int(self.current_user.get("id", 0))
+        except (ValueError, TypeError):
+            user_id = self.current_user.get("id", "")
+        item_id = fi.get("id")
+        item_type = fi.get("type", "file")
+        if not item_id:
+            self._show_toast("分享失败：缺少ID")
+            return
+        try:
+            if item_type == "folder":
+                ok, result = self._remote_api_request("POST", f"user-folders/{item_id}/share", body={"user_id": user_id})
+            else:
+                ok, result = self._remote_api_request("POST", f"user-files/{item_id}/share", body={"user_id": user_id})
+            if ok and result:
+                data = result.get("data", result)
+                share_url = data.get("share_url", "")
+                share_code = data.get("share_code", "")
+                # 如果没有完整URL，用分享码拼接
+                if not share_url and share_code:
+                    base_url = APP_CONFIG.get("remote_api_base", "")
+                    share_url = f"{base_url}/s/{share_code}"
+                # 清理链接，去掉前后空格和换行
+                share_url = share_url.strip()
+                if share_url:
+                    # 确保链接有http前缀
+                    if not share_url.startswith("http"):
+                        share_url = "https://" + share_url.lstrip("/")
+                    # 严格清理链接：去掉所有非打印字符、BOM、前后空格换行
+                    import re
+                    share_url = re.sub(r'[\x00-\x1f\x7f-\x9f\ufeff]', '', share_url)
+                    share_url = share_url.strip()
+                    # 用PowerShell Set-Clipboard复制（最可靠，纯文本无隐藏字符）
+                    copy_success = False
+                    try:
+                        import subprocess
+                        ps_cmd = f"Set-Clipboard -Value '{share_url}'"
+                        subprocess.run(["powershell", "-Command", ps_cmd], 
+                            check=False, capture_output=True, timeout=5)
+                        copy_success = True
+                    except:
+                        pass
+                    # 备用1：Flet原生剪贴板
+                    if not copy_success:
+                        try:
+                            self.page.set_clipboard(share_url)
+                            copy_success = True
+                        except:
+                            pass
+                    # 备用2：Windows clip命令（用UTF-8无BOM）
+                    if not copy_success:
+                        try:
+                            import subprocess
+                            p = subprocess.Popen(["clip"], stdin=subprocess.PIPE)
+                            p.communicate(input=share_url.encode("utf-8"))
+                            copy_success = True
+                        except:
+                            pass
+                    if copy_success:
+                        self._show_toast("分享链接已复制")
+                    else:
+                        self._show_toast("复制失败，请手动复制")
+                else:
+                    self._show_toast("获取分享链接失败")
+            else:
+                error_msg = result.get("msg", "未知错误") if isinstance(result, dict) else str(result)
+                self._show_toast("分享失败：" + str(error_msg))
+        except Exception as e:
+            self._show_toast(f"分享失败: {e}")
+
+    def _show_cloud_upload_menu(self):
+        """显示网盘操作菜单
+        根目录（我的资源）：只显示创建网盘
+        子目录（网盘内）：显示上传文件和创建文件夹
+        """
+        try:
+            is_root = (not hasattr(self, 'current_folder_id')) or self.current_folder_id == 0
+            
+            def upload_file(e):
+                self._close_dialog(dlg)
+                self._upload_cloud_file()
+            def create_folder(e):
+                self._close_dialog(dlg)
+                self._create_cloud_folder()
+            
+            menu_items = []
+            if not is_root:
+                # 网盘内：上传文件
+                menu_items.append(ft.Container(
+                    content=ft.Row([
+                        ft.Icon(ft.icons.UPLOAD_FILE, size=24, color=THEME_COLOR),
+                        ft.Container(width=12),
+                        ft.Text("上传文件", size=15, expand=True),
+                    ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    on_click=upload_file, padding=ft.padding.all(12), border_radius=8,
+                ))
+                menu_items.append(ft.Container(height=4))
+                # 网盘内：创建文件夹
+                menu_items.append(ft.Container(
+                    content=ft.Row([
+                        ft.Icon(ft.icons.CREATE_NEW_FOLDER, size=24, color=THEME_COLOR),
+                        ft.Container(width=12),
+                        ft.Text("创建文件夹", size=15, expand=True),
+                    ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    on_click=create_folder, padding=ft.padding.all(12), border_radius=8,
+                ))
+            else:
+                # 根目录：只创建网盘
+                menu_items.append(ft.Container(
+                    content=ft.Row([
+                        ft.Icon(ft.icons.WEB, size=24, color=THEME_COLOR),
+                        ft.Container(width=12),
+                        ft.Text("创建网盘", size=15, expand=True),
+                    ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    on_click=create_folder, padding=ft.padding.all(12), border_radius=8,
+                ))
+            
+            title_text = "网盘操作" if not is_root else "我的资源"
+            dlg = ft.AlertDialog(
+                title=ft.Text(title_text, size=18, weight=ft.FontWeight.BOLD),
+                content=ft.Column(menu_items, spacing=0, tight=True, width=280),
+                actions=[ft.TextButton("取消", on_click=lambda e: self._close_dialog(dlg))],
+            )
+            self.page.dialog = dlg
+            self.page.dialog.open = True
+            self.page.update()
+        except Exception as e:
+            self._show_toast("打开菜单失败：" + str(e))
+
+    def _fetch_cloud_stats_from_remote(self):
+        """从远程API获取网盘统计信息"""
+        if not self.current_user:
+            return None
+        try:
+            user_id = self.current_user.get("id", "")
+            ok, result = self._remote_api_request("GET", "user-fm-stats", params={"user_id": user_id})
+            if ok and result:
+                return result
+        except Exception as e:
+            print(f"获取网盘统计失败: {e}")
+        return None
+
+    def _get_folder_download_page_info(self, share_code):
+        """通过下载页API获取文件夹的公告、提取码、浏览次数、下载次数"""
+        if not share_code:
+            return None
+        try:
+            ok, result = self._remote_api_request("GET", f"download-page/{share_code}")
+            if ok and result and result.get("ok"):
+                if result.get("type") == "folder":
+                    folder = result.get("folder", {})
+                    return {
+                        "notice": folder.get("notice", ""),
+                        "extract_code": folder.get("extract_code", result.get("extract_code", "")),
+                        "view_count": folder.get("view_count", 0),
+                        "download_count": folder.get("download_count", 0),
+                    }
+        except Exception as e:
+            print(f"获取下载页信息失败: {e}")
+        return None
+
+    def _show_cloud_stats_detail(self, stat_type):
+        """显示网盘统计详情（直接用文件夹列表返回的view_count/download_count，无需额外API）"""
+        try:
+            # 先显示弹窗（加载中）
+            loading_content = ft.Container(
+                content=ft.Column([
+                    ft.ProgressRing(width=30, height=30, color=THEME_COLOR),
+                    ft.Container(height=10),
+                    ft.Text("正在加载...", size=13, color=self.clr_text2),
+                ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                padding=ft.padding.only(top=80),
+            )
+            
+            title_with_hint = ft.Column([
+                ft.Text(f"{stat_type}详情", size=18, weight=ft.FontWeight.BOLD),
+                ft.Text("各网盘分享页统计（文件浏览不计入）", size=11, color=self.clr_text2),
+            ], spacing=2)
+            
+            dlg = ft.AlertDialog(
+                title=title_with_hint,
+                content=ft.Container(content=loading_content, width=300, height=350),
+                actions=[ft.TextButton("关闭", on_click=lambda e: self._close_dialog(dlg))],
+            )
+            self.page.dialog = dlg
+            self.page.dialog.open = True
+            self.page.update()
+            
+            # 后台获取文件夹列表（列表里已经带view_count和download_count）
+            def load_folders():
+                try:
+                    folders = []
+                    try:
+                        if self.current_user:
+                            user_id = self.current_user.get("id", "")
+                            ok, result = self._remote_api_request("GET", "user-folders", params={"user_id": user_id, "parent_id": 0})
+                            if ok and result:
+                                folders = result.get("folders", [])
+                    except:
+                        pass
+                    
+                    def show_list():
+                        detail_items = []
+                        if not folders:
+                            detail_items.append(ft.Container(
+                                content=ft.Column([
+                                    ft.Icon(ft.icons.FOLDER_OFF_OUTLINED, size=48, color=self.clr_text2),
+                                    ft.Container(height=12),
+                                    ft.Text("暂无网盘数据", size=14, color=self.clr_text2),
+                                ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                                padding=ft.padding.all(20),
+                            ))
+                        else:
+                            for folder in folders:
+                                folder_name = folder.get("name", "未命名")
+                                raw_name = folder_name if folder_name.startswith("我的云盘") else f"我的云盘-{folder_name}"
+                                # 直接用文件夹列表返回的统计字段
+                                if stat_type == "浏览人数":
+                                    count = folder.get("view_count", 0)
+                                    color = ft.colors.BLUE
+                                else:
+                                    count = folder.get("download_count", 0)
+                                    color = ft.colors.GREEN
+                                detail_items.append(ft.Container(
+                                    content=ft.Row([
+                                        ft.Container(content=ft.Icon(ft.icons.CLOUD_OUTLINED, size=20, color=ft.colors.WHITE),
+                                            width=36, height=36, bgcolor=ft.colors.BLUE, border_radius=8, alignment=ft.alignment.center),
+                                        ft.Container(width=10),
+                                        ft.Text(raw_name, size=14, weight=ft.FontWeight.W_500, color=self.clr_text, expand=True, overflow=ft.TextOverflow.ELLIPSIS),
+                                        ft.Text(str(count), size=14, weight=ft.FontWeight.W_600, color=color),
+                                    ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                                    bgcolor=self.clr_card, border_radius=10, padding=ft.padding.all(10),
+                                    margin=ft.padding.only(0, 3, 0, 3),
+                                ))
+                        dlg.content = ft.Container(
+                            content=ft.Column(detail_items, spacing=0, scroll=ft.ScrollMode.AUTO),
+                            width=300, height=350,
+                        )
+                        self.page.update()
+                    self.page.run_thread(show_list)
+                except Exception as e:
+                    print(f"加载统计详情失败: {e}")
+                    self.page.run_thread(lambda: self._show_toast("加载失败"))
+            
+            import threading
+            threading.Thread(target=load_folders, daemon=True).start()
+        except Exception as e:
+            self._show_toast("显示统计详情失败：" + str(e))
+
+    def _render_cloud_files(self):
+        if not hasattr(self, '_cloud_file_list') or not self._cloud_file_list:
+            return
+        self._cloud_file_list.controls.clear()
+        files = self._get_cloud_files()
+        if not files:
+            self._cloud_file_list.controls.append(ft.Container(
+                content=ft.Column([
+                    ft.Container(height=40),
+                    ft.Icon(ft.icons.CLOUD_OFF_OUTLINED, size=64, color=self.clr_text2),
+                    ft.Container(height=12),
+                    ft.Text("网盘是空的", size=16, color=self.clr_text2, weight=ft.FontWeight.W_500),
+                    ft.Container(height=6),
+                    ft.Text("点击右下角加号上传文件", size=13, color=self.clr_text2),
+                    ft.Container(height=40),
+                ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                expand=True, alignment=ft.alignment.center,
+            ))
+            return
+        for f in files:
+            icon_color = ft.colors.BLUE if f.get("type") == "folder" else ft.colors.ORANGE
+            icon = ft.icons.FOLDER if f.get("type") == "folder" else ft.icons.INSERT_DRIVE_FILE_OUTLINED
+            self._cloud_file_list.controls.append(ft.Container(
+                content=ft.Row([
+                    ft.Container(content=ft.Icon(icon, size=22, color=ft.colors.WHITE),
+                        width=40, height=40, bgcolor=icon_color, border_radius=10, alignment=ft.alignment.center),
+                    ft.Container(width=10),
+                    ft.Column([
+                        ft.Text(f.get("name", "未命名"), size=14, weight=ft.FontWeight.W_500, color=self.clr_text,
+                            overflow=ft.TextOverflow.ELLIPSIS),
+                        ft.Container(height=2),
+                        ft.Text(f.get("info", ""), size=11, color=self.clr_text2),
+                    ], spacing=0, expand=True),
+                    ft.PopupMenuButton(items=[
+                        ft.PopupMenuItem(icon=ft.icons.DOWNLOAD_OUTLINED, text="下载", on_click=lambda e, fi=f: self._download_cloud_file(fi)),
+                        ft.PopupMenuItem(icon=ft.icons.DELETE_OUTLINE, text="删除", on_click=lambda e, fi=f: self._delete_cloud_file(fi)),
+                    ], icon=ft.Icon(ft.icons.MORE_VERT, size=20, color=self.clr_text2)),
+                ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                bgcolor=self.clr_card, border_radius=12, padding=ft.padding.symmetric(horizontal=12, vertical=10),
+                margin=ft.padding.symmetric(horizontal=16), on_click=lambda e, fi=f: self._open_cloud_file(fi),
+            ))
+        self._cloud_file_list.controls.append(ft.Container(height=20))
+
+    def _get_cloud_files(self, use_cache=True, folder_id=None):
+        """获取用户网盘文件和文件夹列表
+        use_cache=True时优先返回缓存，然后后台刷新
+        folder_id: 指定文件夹ID，None表示使用当前文件夹
+        """
+        if folder_id is None:
+            folder_id = self.current_folder_id
+        # 只有根目录才用缓存，子目录实时获取
+        if use_cache and folder_id == 0 and self._cached_cloud_files is not None:
+            # 后台刷新缓存
+            if not self._cloud_files_loading:
+                threading.Thread(target=self._refresh_cloud_cache, daemon=True).start()
+            return self._cached_cloud_files
+        # 直接从远程API获取
+        return self._fetch_cloud_files_from_remote(folder_id)
+
+    def _fetch_cloud_files_from_remote(self, folder_id=0):
+        """从远程API获取网盘文件列表
+        folder_id: 文件夹ID，0表示根目录
+        """
+        if not self.current_user:
+            return []
+        try:
+            user_id = int(self.current_user.get("id", 0))
+        except (ValueError, TypeError):
+            user_id = self.current_user.get("id", "")
+        if not user_id:
+            return []
+        result = []
+        try:
+            # 获取文件夹列表
+            ok, folders_data = self._remote_api_request("GET", "user-folders", params={"user_id": user_id, "parent_id": folder_id})
+            if ok and folders_data:
+                folders = folders_data.get("folders", [])
+                for folder in folders:
+                    result.append({
+                        "id": folder.get("id"),
+                        "name": folder.get("name", "未命名"),
+                        "type": "folder",
+                        "size_bytes": 0,
+                        "info": f"文件夹 · {folder.get('file_count', 0)}个文件",
+                        "share_code": folder.get("code", folder.get("share_code", "")),
+                        "extract_code": folder.get("extract_code", ""),
+                    })
+            # 获取文件列表
+            ok, files_data = self._remote_api_request("GET", "user-files", params={"user_id": user_id, "folder_id": folder_id})
+            if ok and files_data:
+                files = files_data.get("files", [])
+                for f in files:
+                    result.append({
+                        "id": f.get("id"),
+                        "name": f.get("name", "未命名"),
+                        "type": "file",
+                        "size_bytes": f.get("file_size", 0),
+                        "info": f"{f.get('size', '未知')} · {f.get('created_at', '')}",
+                        "share_code": f.get("share_code", ""),
+                        "extract_code": f.get("extract_code", ""),
+                    })
+        except Exception as e:
+            print(f"获取网盘文件失败: {e}")
+        # 排序：文件夹在前，文件在后，各自按创建时间倒序（最新的在前面）
+        folders = [f for f in result if f.get("type") == "folder"]
+        files = [f for f in result if f.get("type") == "file"]
+        # 文件按创建时间倒序（info中包含创建时间，简单按原始顺序即可，远程API应该已排序）
+        return folders + files
+
+    def _refresh_cloud_cache(self):
+        """后台刷新网盘缓存"""
+        if self._cloud_files_loading:
+            return
+        self._cloud_files_loading = True
+        try:
+            files = self._fetch_cloud_files_from_remote()
+            self._cached_cloud_files = files
+            # 同时刷新已用空间
+            self._cached_cloud_used_mb = self._fetch_cloud_used_mb_from_remote()
+            # 如果当前在网盘页面，刷新UI
+            if hasattr(self, '_cloud_file_list') and self._cloud_file_list:
+                try:
+                    self._render_cloud_files()
+                    self.page.update()
+                except:
+                    pass
+        except Exception as e:
+            print(f"刷新网盘缓存失败: {e}")
+        finally:
+            self._cloud_files_loading = False
+
+    def _fetch_cloud_used_mb_from_remote(self):
+        """从远程API获取网盘已用空间"""
+        if not self.current_user:
+            return 0
+        user_id = self.current_user.get("id", "")
+        try:
+            ok, result = self._remote_api_request("GET", "user-fm-stats", params={"user_id": user_id})
+            if ok and result:
+                total_size = result.get("total_file_size", 0)
+                return total_size / (1024 * 1024)
+        except Exception as e:
+            print(f"获取网盘统计失败: {e}")
+        return 0
+
+    def _save_cloud_files(self, files):
+        try:
+            cloud_dir = os.path.join(_base_dir, "user_data")
+            os.makedirs(cloud_dir, exist_ok=True)
+            with open(os.path.join(cloud_dir, "cloud_drive.json"), "w", encoding="utf-8") as f:
+                json.dump(files, f, ensure_ascii=False, indent=2)
+        except:
+            pass
+
+    def _get_cloud_used_mb(self, use_cache=True):
+        """获取用户网盘已用空间（优先缓存，后台刷新）"""
+        if use_cache and self._cached_cloud_used_mb > 0:
+            return self._cached_cloud_used_mb
+        return self._fetch_cloud_used_mb_from_remote()
+
+    def _upload_cloud_file(self):
+        """上传文件到远程网盘（100MB以内用原方式，超过100MB分块上传）"""
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+            root = tk.Tk()
+            root.withdraw()
+            file_path = filedialog.askopenfilename(title="选择要上传的文件")
+            root.destroy()
+            if not file_path or not os.path.exists(file_path) or not self.current_user:
+                return
+            try:
+                user_id = int(self.current_user.get("id", 0))
+            except (ValueError, TypeError):
+                user_id = self.current_user.get("id", "")
+            fname = os.path.basename(file_path)
+            file_size = os.path.getsize(file_path)
+            file_size_mb = file_size / (1024 * 1024)
+
+            # 超过100MB走分块上传
+            if file_size > 100 * 1024 * 1024:
+                # 显示上传中弹窗
+                progress_ring = ft.ProgressRing(width=36, height=36, color=THEME_COLOR, stroke_width=3)
+                upload_status = ft.Text(f"正在上传：{fname}", size=13, color=self.clr_text, text_align=ft.TextAlign.CENTER)
+                upload_size_text = ft.Text(f"{file_size_mb:.1f} MB", size=11, color=self.clr_text2)
+                progress_bar = ft.ProgressBar(width=240, height=8, color=THEME_COLOR, bgcolor=self.clr_border, value=0)
+                progress_text = ft.Text("0%", size=12, color=self.clr_text2, text_align=ft.TextAlign.CENTER)
+                upload_dlg = ft.AlertDialog(
+                    content=ft.Container(
+                        content=ft.Column([
+                            progress_ring, ft.Container(height=10),
+                            upload_status, ft.Container(height=2), upload_size_text,
+                            ft.Container(height=12), progress_bar, ft.Container(height=4), progress_text,
+                        ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER, tight=True),
+                        padding=ft.padding.all(20), width=280,
+                    ),
+                )
+                self.page.dialog = upload_dlg
+                self.page.dialog.open = True
+                self.page.update()
+                def do_chunked():
+                    try:
+                        self._chunked_upload(file_path, fname, file_size, user_id,
+                            upload_dlg, progress_bar, progress_text, progress_ring, upload_status)
+                    except Exception as e:
+                        self._close_dialog(upload_dlg)
+                        self._show_toast("上传失败：" + str(e)[:40])
+                threading.Thread(target=do_chunked, daemon=True).start()
+                return
+
+            # 100MB以内用原方式（和之前完全一样）
+            progress_ring = ft.ProgressRing(width=36, height=36, color=THEME_COLOR, stroke_width=3)
+            upload_status = ft.Text(f"正在上传：{fname}", size=13, color=self.clr_text, text_align=ft.TextAlign.CENTER)
+            upload_size_text = ft.Text(f"{file_size_mb:.1f} MB", size=11, color=self.clr_text2)
+            progress_bar = ft.ProgressBar(width=240, height=8, color=THEME_COLOR, bgcolor=self.clr_border, value=0)
+            progress_text = ft.Text("0%", size=12, color=self.clr_text2, text_align=ft.TextAlign.CENTER)
+            upload_dlg = ft.AlertDialog(
+                content=ft.Container(
+                    content=ft.Column([
+                        progress_ring, ft.Container(height=10),
+                        upload_status, ft.Container(height=2), upload_size_text,
+                        ft.Container(height=12), progress_bar, ft.Container(height=4), progress_text,
+                    ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER, tight=True),
+                    padding=ft.padding.all(20), width=280,
+                ),
+            )
+            self.page.dialog = upload_dlg
+            self.page.dialog.open = True
+            self.page.update()
+
+            def do_upload():
+                try:
+                    import http.client
+                    from urllib.parse import urlparse
+                    base_url = APP_CONFIG.get("remote_api_base", "")
+                    app_key = APP_CONFIG.get("remote_app_key", "")
+                    if not base_url or not app_key:
+                        self._close_dialog(upload_dlg)
+                        self._show_toast("未配置远程API")
+                        return
+                    url = f"{base_url}/api/remote/{app_key}/user-files/upload"
+                    parsed = urlparse(url)
+                    is_https = parsed.scheme == "https"
+                    boundary = "----YoXiBoundary" + str(int(time.time() * 1000))
+                    current_fid = self.current_folder_id if hasattr(self, 'current_folder_id') else 0
+                    user_id_part = (
+                        f"--{boundary}\r\n"
+                        f'Content-Disposition: form-data; name="user_id"\r\n\r\n'
+                        f"{user_id}\r\n"
+                    ).encode("utf-8")
+                    folder_id_part = (
+                        f"--{boundary}\r\n"
+                        f'Content-Disposition: form-data; name="folder_id"\r\n\r\n'
+                        f"{current_fid}\r\n"
+                    ).encode("utf-8")
+                    try:
+                        fname.encode('ascii').decode('ascii')
+                        file_header = (
+                            f"--{boundary}\r\n"
+                            f'Content-Disposition: form-data; name="file"; filename="{fname}"\r\n'
+                            f"Content-Type: application/octet-stream\r\n\r\n"
+                        ).encode("utf-8")
+                    except (UnicodeEncodeError, UnicodeDecodeError):
+                        from urllib.parse import quote
+                        fname_encoded = quote(fname)
+                        file_header = (
+                            f"--{boundary}\r\n"
+                            f'Content-Disposition: form-data; name="file"; filename="file"; filename*=UTF-8\'\'{fname_encoded}\r\n'
+                            f"Content-Type: application/octet-stream\r\n\r\n"
+                        ).encode("utf-8")
+                    end_boundary = f"\r\n--{boundary}--\r\n".encode("utf-8")
+                    total_size = len(user_id_part) + len(folder_id_part) + len(file_header) + file_size + len(end_boundary)
+                    sent_size = 0
+                    if is_https:
+                        conn = http.client.HTTPSConnection(parsed.netloc, timeout=120)
+                    else:
+                        conn = http.client.HTTPConnection(parsed.netloc, timeout=120)
+                    conn.putrequest("POST", parsed.path + ("?" + parsed.query if parsed.query else ""))
+                    conn.putheader("Content-Type", f"multipart/form-data; boundary={boundary}")
+                    conn.putheader("Content-Length", str(total_size))
+                    conn.putheader("User-Agent", "YoXiEmail/1.0")
+                    conn.putheader("Accept", "application/json")
+                    conn.endheaders()
+                    conn.send(user_id_part)
+                    sent_size += len(user_id_part)
+                    conn.send(folder_id_part)
+                    sent_size += len(folder_id_part)
+                    conn.send(file_header)
+                    sent_size += len(file_header)
+                    chunk_size = 64 * 1024
+                    with open(file_path, "rb") as f:
+                        while True:
+                            chunk = f.read(chunk_size)
+                            if not chunk:
+                                break
+                            conn.send(chunk)
+                            sent_size += len(chunk)
+                            pct = min(100, int(sent_size / total_size * 100))
+                            def update_progress(p=pct):
+                                progress_bar.value = p / 100
+                                progress_text.value = f"{p}%"
+                                self.page.update()
+                            self.page.run_thread(update_progress)
+                    conn.send(end_boundary)
+                    resp = conn.getresponse()
+                    resp_data = resp.read().decode("utf-8")
+                    conn.close()
+                    if resp.status == 200:
+                        result = json.loads(resp_data)
+                        if result.get("ok"):
+                            self._close_dialog(upload_dlg)
+                            self._show_toast("上传成功")
+                            self._cached_cloud_files = None
+                            threading.Thread(target=self._refresh_cloud_cache, daemon=True).start()
+                            try:
+                                self._show_my_resources(folder_id=self.current_folder_id,
+                                    folder_name=self.folder_path[-1][1] if self.folder_path else "我的资源")
+                            except:
+                                pass
+                        else:
+                            error_msg = result.get("msg", "未知错误")
+                            self._close_dialog(upload_dlg)
+                            self._show_toast("上传失败：" + str(error_msg))
+                    else:
+                        error_detail = f"HTTP {resp.status}"
+                        try:
+                            err_result = json.loads(resp_data)
+                            if err_result.get("msg"):
+                                error_detail += ": " + err_result["msg"]
+                        except:
+                            if resp_data and len(resp_data) < 100:
+                                error_detail += ": " + resp_data
+                        self._close_dialog(upload_dlg)
+                        self._show_toast("上传失败：" + error_detail)
+                except Exception as e:
+                    self._close_dialog(upload_dlg)
+                    self._show_toast("上传失败：" + str(e)[:40])
+            threading.Thread(target=do_upload, daemon=True).start()
+        except Exception as e:
+            self._show_toast("上传出错：" + str(e)[:30])
+
+    def _chunked_upload(self, file_path, fname, file_size, user_id, upload_dlg, progress_bar, progress_text, progress_ring, upload_status):
+        """大文件分块上传（init → chunk → complete）"""
+        try:
+            import http.client
+            from urllib.parse import urlparse
+
+            base_url = APP_CONFIG.get("remote_api_base", "")
+            app_key = APP_CONFIG.get("remote_app_key", "")
+            if not base_url or not app_key:
+                self._close_dialog(upload_dlg)
+                self._show_toast("未配置远程API")
+                return
+
+            CHUNK_SIZE = 5 * 1024 * 1024
+            total_chunks = (file_size + CHUNK_SIZE - 1) // CHUNK_SIZE
+            current_fid = self.current_folder_id if hasattr(self, 'current_folder_id') else 0
+
+            def api_post(path, body_data=None, is_json=True):
+                """发送POST请求"""
+                url = f"{base_url}/api/remote/{app_key}/{path}"
+                parsed = urlparse(url)
+                if parsed.scheme == "https":
+                    conn = http.client.HTTPSConnection(parsed.netloc, timeout=120)
+                else:
+                    conn = http.client.HTTPConnection(parsed.netloc, timeout=120)
+                if is_json:
+                    data = json.dumps(body_data).encode("utf-8")
+                    conn.putrequest("POST", parsed.path)
+                    conn.putheader("Content-Type", "application/json")
+                    conn.putheader("Content-Length", str(len(data)))
+                    conn.putheader("User-Agent", "YoXiEmail/1.0")
+                    conn.endheaders()
+                    conn.send(data)
+                else:
+                    conn.putrequest("POST", parsed.path)
+                    conn.putheader("Content-Type", "application/octet-stream")
+                    conn.putheader("Content-Length", str(len(body_data)))
+                    conn.putheader("User-Agent", "YoXiEmail/1.0")
+                    conn.endheaders()
+                    conn.send(body_data)
+                resp = conn.getresponse()
+                resp_data = resp.read().decode("utf-8")
+                conn.close()
+                return resp.status, resp_data
+
+            # 1. 初始化上传
+            def update_status(text):
+                upload_status.value = text
+                self.page.update()
+
+            update_status(f"初始化上传...")
+            status, resp_data = api_post("user-files/upload/init", {
+                "user_id": str(user_id),
+                "filename": fname,
+                "total_size": file_size,
+                "folder_id": current_fid,
+                "total_chunks": total_chunks,
+            })
+            if status != 200:
+                self._close_dialog(upload_dlg)
+                self._show_toast(f"上传初始化失败（HTTP {status}），大文件上传需要服务器支持分块接口")
+                return
+            init_result = json.loads(resp_data)
+            if not init_result.get("ok"):
+                self._close_dialog(upload_dlg)
+                self._show_toast("初始化失败：" + init_result.get("msg", "未知错误"))
+                return
+            upload_id = init_result.get("upload_id") or init_result.get("data", {}).get("upload_id", "")
+            if not upload_id:
+                self._close_dialog(upload_dlg)
+                self._show_toast("初始化失败：未返回upload_id")
+                return
+
+            # 2. 分块上传（带失败重试）
+            with open(file_path, "rb") as f:
+                for chunk_index in range(total_chunks):
+                    chunk_data = f.read(CHUNK_SIZE)
+                    if not chunk_data:
+                        break
+                    update_status(f"上传分块 {chunk_index + 1}/{total_chunks}")
+
+                    # 每个分块最多重试3次
+                    chunk_ok = False
+                    for retry in range(3):
+                        try:
+                            # 发送分块（用multipart包含upload_id和chunk_index）
+                            url = f"{base_url}/api/remote/{app_key}/user-files/upload/chunk"
+                            parsed = urlparse(url)
+                            boundary = "----YoXiChunk" + str(int(time.time() * 1000))
+                            uid_part = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"upload_id\"\r\n\r\n{upload_id}\r\n").encode("utf-8")
+                            idx_part = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"chunk_index\"\r\n\r\n{chunk_index}\r\n").encode("utf-8")
+                            file_head = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"chunk\"; filename=\"chunk_{chunk_index}\"\r\nContent-Type: application/octet-stream\r\n\r\n").encode("utf-8")
+                            end_b = f"\r\n--{boundary}--\r\n".encode("utf-8")
+                            total_chunk_size = len(uid_part) + len(idx_part) + len(file_head) + len(chunk_data) + len(end_b)
+
+                            if parsed.scheme == "https":
+                                conn = http.client.HTTPSConnection(parsed.netloc, timeout=120)
+                            else:
+                                conn = http.client.HTTPConnection(parsed.netloc, timeout=120)
+                            conn.putrequest("POST", parsed.path)
+                            conn.putheader("Content-Type", f"multipart/form-data; boundary={boundary}")
+                            conn.putheader("Content-Length", str(total_chunk_size))
+                            conn.putheader("User-Agent", "YoXiEmail/1.0")
+                            conn.endheaders()
+                            conn.send(uid_part)
+                            conn.send(idx_part)
+                            conn.send(file_head)
+                            conn.send(chunk_data)
+                            conn.send(end_b)
+                            resp = conn.getresponse()
+                            resp_body = resp.read().decode("utf-8")
+                            conn.close()
+
+                            # 检查分块上传是否成功
+                            if resp.status == 200:
+                                try:
+                                    chunk_result = json.loads(resp_body)
+                                    if chunk_result.get("ok"):
+                                        chunk_ok = True
+                                        break
+                                except:
+                                    chunk_ok = True
+                                    break
+                            if retry < 2:
+                                time.sleep(1)  # 重试前等待1秒
+                        except Exception:
+                            if retry < 2:
+                                time.sleep(1)
+                            continue
+
+                    if not chunk_ok:
+                        self._close_dialog(upload_dlg)
+                        self._show_toast(f"分块 {chunk_index + 1} 上传失败，请重试")
+                        return
+
+                    # 更新进度
+                    pct = min(100, int((chunk_index + 1) / total_chunks * 100))
+                    def update_progress(p=pct):
+                        progress_bar.value = p / 100
+                        progress_text.value = f"{p}%"
+                        self.page.update()
+                    self.page.run_thread(update_progress)
+
+            # 3. 完成上传
+            update_status("正在合并文件...")
+            status, resp_data = api_post("user-files/upload/complete", {
+                "upload_id": upload_id,
+                "user_id": str(user_id),
+            })
+            self._handle_upload_response(status, resp_data, upload_dlg)
+        except Exception as e:
+            self._close_dialog(upload_dlg)
+            self._show_toast("分块上传失败：" + str(e)[:40])
+
+    def _handle_upload_response(self, status, resp_data, upload_dlg):
+        """处理上传响应"""
+        if status == 200:
+            try:
+                result = json.loads(resp_data)
+                if result.get("ok"):
+                    self._close_dialog(upload_dlg)
+                    self._show_toast("上传成功")
+                    self._cached_cloud_files = None
+                    threading.Thread(target=self._refresh_cloud_cache, daemon=True).start()
+                    try:
+                        self._show_my_resources(folder_id=self.current_folder_id,
+                            folder_name=self.folder_path[-1][1] if self.folder_path else "我的资源")
+                    except:
+                        pass
+                else:
+                    error_msg = result.get("msg", "未知错误")
+                    self._close_dialog(upload_dlg)
+                    self._show_toast("上传失败：" + str(error_msg))
+            except:
+                self._close_dialog(upload_dlg)
+                self._show_toast("上传成功")
+        elif status == 500:
+            self._close_dialog(upload_dlg)
+            self._show_toast("上传失败：服务器错误，文件可能过大，请用分块上传或联系管理员")
+        else:
+            error_detail = f"HTTP {status}"
+            try:
+                err_result = json.loads(resp_data)
+                if err_result.get("msg"):
+                    error_detail += ": " + err_result["msg"]
+            except:
+                if resp_data and len(resp_data) < 100:
+                    error_detail += ": " + resp_data
+            self._close_dialog(upload_dlg)
+            self._show_toast("上传失败：" + error_detail)
+
+
+    def _create_cloud_folder(self):
+        try:
+            # 根目录创建网盘时检查数量限制（最多5个）
+            is_root = (not hasattr(self, 'current_folder_id')) or self.current_folder_id == 0
+            if is_root:
+                MAX_DRIVES = 5
+                drive_count = self._get_current_cloud_drive_count()
+                if drive_count >= MAX_DRIVES:
+                    self.page.dialog = ft.AlertDialog(
+                        title=ft.Row([
+                            ft.Icon(ft.icons.LOCK, size=20, color=ft.colors.ORANGE),
+                            ft.Container(width=8),
+                            ft.Text("网盘数量已达上限", size=16, weight=ft.FontWeight.BOLD),
+                        ]),
+                        content=ft.Column([
+                            ft.Text(f"最多可创建 {MAX_DRIVES} 个网盘，当前已创建 {drive_count} 个。", size=13, color=self.clr_text2),
+                            ft.Container(height=6),
+                            ft.Text("如需创建更多网盘，请联系管理员帮你创建。", size=13, color=self.clr_text2),
+                        ], spacing=0, tight=True),
+                        actions=[
+                            ft.TextButton("我知道了", on_click=lambda ev: self._close_dialog()),
+                        ],
+                        actions_alignment=ft.MainAxisAlignment.END,
+                    )
+                    self.page.dialog.open = True
+                    self.page.update()
+                    return
+
+            creating = [False]  # 用列表实现闭包变量，防重复点击
+            def on_submit(e):
+                if creating[0]:
+                    return  # 防止重复点击
+                name = name_field.value.strip()
+                if not name:
+                    self._show_toast("请输入文件夹名称")
+                    return
+                if not self.current_user:
+                    self._show_toast("请先登录")
+                    return
+                # 根目录创建网盘时检查重名
+                if is_root:
+                    try:
+                        cached = getattr(self, '_cached_cloud_files', None)
+                        if cached and isinstance(cached, list):
+                            for f in cached:
+                                if isinstance(f, dict) and f.get("type") == "folder" and f.get("name", "").strip() == name:
+                                    self._show_toast("网盘名称已存在，请换一个名字")
+                                    return
+                    except:
+                        pass
+                creating[0] = True
+                # 立即关闭对话框，显示创建中
+                self._close_dialog(dlg)
+                self._show_toast(f"正在创建：{name}")
+                # 后台创建，不阻塞UI
+                def do_create():
+                    try:
+                        try:
+                            user_id = int(self.current_user.get("id", 0))
+                        except (ValueError, TypeError):
+                            user_id = self.current_user.get("id", "")
+                        parent_id = self.current_folder_id if hasattr(self, 'current_folder_id') else 0
+                        ok, result = self._remote_api_request("POST", "user-folders", body={"user_id": user_id, "name": name, "parent_id": parent_id})
+                        if ok:
+                            # 清除缓存，后台刷新
+                            self._cached_cloud_files = None
+                            threading.Thread(target=self._refresh_cloud_cache, daemon=True).start()
+                            # 立即刷新当前页面
+                            try:
+                                self._show_my_resources(folder_id=self.current_folder_id, 
+                                    folder_name=self.folder_path[-1][1] if self.folder_path else "我的资源")
+                            except:
+                                pass
+                            self._show_toast(f"已创建：{name}")
+                        else:
+                            error_msg = result.get("msg", "") if isinstance(result, dict) else str(result)
+                            error_msg = str(error_msg)
+                            if not error_msg or "500" in error_msg or "Internal" in error_msg:
+                                self._show_toast("服务器超时，请联系管理员或重试")
+                            elif "exist" in error_msg.lower() or "已存在" in error_msg or "重复" in error_msg:
+                                self._show_toast("名称已存在，请换一个名字")
+                            elif "permission" in error_msg.lower() or "权限" in error_msg:
+                                self._show_toast("没有权限，请联系管理员")
+                            elif "limit" in error_msg.lower() or "上限" in error_msg or "超过" in error_msg:
+                                self._show_toast("数量已达上限，请前往积分商城兑换")
+                            else:
+                                self._show_toast("创建失败：" + error_msg[:20])
+                    except Exception as ex:
+                        err_str = str(ex)
+                        if "timeout" in err_str.lower() or "timed out" in err_str.lower():
+                            self._show_toast("网络超时，请检查网络后重试")
+                        elif "500" in err_str or "Internal" in err_str:
+                            self._show_toast("服务器超时，请联系管理员或重试")
+                        elif "Connection" in err_str or "连接" in err_str:
+                            self._show_toast("网络连接失败，请检查网络")
+                        else:
+                            self._show_toast("创建失败：" + err_str[:20])
+                threading.Thread(target=do_create, daemon=True).start()
+            dialog_title = "新建网盘" if is_root else "新建文件夹"
+            field_label = "网盘名称" if is_root else "文件夹名称"
+            name_field = ft.TextField(label=field_label, width=280, border_radius=8)
+            dlg = ft.AlertDialog(title=ft.Text(dialog_title), content=name_field,
+                actions=[ft.TextButton("取消", on_click=lambda e: self._close_dialog(dlg)),
+                         ft.TextButton("创建", on_click=on_submit)])
+            self.page.dialog = dlg
+            self.page.dialog.open = True
+            self.page.update()
+        except Exception as e:
+            self._show_toast("创建网盘出错：" + str(e))
+    def _download_cloud_file(self, fi):
+        self._show_toast("开始下载：" + fi.get("name", ""))
+
+    def _copy_cloud_link(self, fi):
+        self._show_toast("链接已复制")
+
+    def _delete_cloud_file(self, fi):
+        """删除文件或文件夹（后台删除，立即从UI移除）"""
+        if not self.current_user:
+            return
+        item_id = fi.get("id")
+        item_type = fi.get("type", "file")
+        item_name = fi.get("name", "文件")
+        if not item_id:
+            self._show_toast("删除失败：缺少ID")
+            return
+        # 立即显示删除中
+        self._show_toast(f"正在删除：{item_name}")
+        # 后台删除，不阻塞UI
+        def do_delete():
+            try:
+                try:
+                    user_id = int(self.current_user.get("id", 0))
+                except (ValueError, TypeError):
+                    user_id = self.current_user.get("id", "")
+                if item_type == "folder":
+                    ok, result = self._remote_api_request("DELETE", f"user-folders/{item_id}", body={"user_id": user_id})
+                else:
+                    ok, result = self._remote_api_request("DELETE", f"user-files/{item_id}", body={"user_id": user_id})
+                if ok:
+                    # 清除缓存，后台刷新
+                    self._cached_cloud_files = None
+                    threading.Thread(target=self._refresh_cloud_cache, daemon=True).start()
+                    # 立即刷新当前页面
+                    try:
+                        self._show_my_resources(folder_id=self.current_folder_id,
+                            folder_name=self.folder_path[-1][1] if self.folder_path else "我的资源")
+                    except:
+                        pass
+                    if item_type == "folder":
+                        self._show_toast("文件夹已删除")
+                    else:
+                        self._show_toast("文件已删除")
+                else:
+                    self._show_toast("删除失败")
+            except Exception as e:
+                self._show_toast(f"删除失败: {e}")
+        threading.Thread(target=do_delete, daemon=True).start()
+    def _open_cloud_file(self, fi):
+        if fi.get("type") == "folder":
+            self._show_toast("打开文件夹：" + fi.get("name", ""))
+        else:
+            self._show_toast("打开文件：" + fi.get("name", ""))
+
     def render_me_page(self):
+        self._show_navbar()  # 主页面显示导航栏
         self.content.controls.clear()
         self.page.floating_action_button = None
         self.content.scroll = None  # 关闭整体滚动，标题固定
@@ -4583,22 +8948,34 @@ class TempMailApp:
                 margin=ft.margin.only(16, 4, 16, 6),
             ))
 
-        # ---- 统计卡片（2列） ----
-        email_count = len(getattr(self, '_cloud_emails_cache', []))
-        msg_total = self._get_total_message_count()
+        # ---- 统计卡片（2列）：网盘文件夹数量 + 文件数量 ----
+        _cloud_stats = getattr(self, '_cached_cloud_stats', None) or {}
+        folder_count = _cloud_stats.get("folder_count", 0)
+        file_count = _cloud_stats.get("file_count", 0)
+        # 未登录或无缓存时，后台加载网盘统计
+        if self.current_user and not _cloud_stats:
+            def _load_cloud_stats_for_me():
+                try:
+                    stats = self._fetch_cloud_stats_from_remote()
+                    if stats:
+                        self._cached_cloud_stats = stats
+                        self.page.run_thread(self.render_me_page)
+                except Exception as e:
+                    print(f"[我的页面] 加载网盘统计失败: {e}")
+            threading.Thread(target=_load_cloud_stats_for_me, daemon=True).start()
         scroll_content.controls.append(ft.Container(
             content=ft.Row([
                 ft.Container(content=ft.Column([
-                    ft.Text(str(email_count), size=26, weight=ft.FontWeight.BOLD, color=THEME_COLOR),
+                    ft.Text(str(folder_count), size=26, weight=ft.FontWeight.BOLD, color=THEME_COLOR),
                     ft.Container(height=2),
-                    ft.Text("邮箱数量", size=12, color=self.clr_text2),
+                    ft.Text("文件夹", size=12, color=self.clr_text2),
                 ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=0),
                     expand=True, alignment=ft.alignment.center, padding=14),
                 ft.Container(width=1, bgcolor=self.clr_border, height=50),
                 ft.Container(content=ft.Column([
-                    ft.Text(str(msg_total), size=26, weight=ft.FontWeight.BOLD, color=ft.colors.ORANGE),
+                    ft.Text(str(file_count), size=26, weight=ft.FontWeight.BOLD, color=ft.colors.ORANGE),
                     ft.Container(height=2),
-                    ft.Text("收到邮件", size=12, color=self.clr_text2),
+                    ft.Text("文件", size=12, color=self.clr_text2),
                 ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=0),
                     expand=True, alignment=ft.alignment.center, padding=14),
             ], spacing=0),
@@ -4642,6 +9019,31 @@ class TempMailApp:
             margin=ft.margin.only(16, 2, 16, 6),
         ))
 
+        # ---- 积分入口 ----
+        # TODO: API接入后，积分数字从后端获取；未登录时点击应跳转登录
+        _my_points_display = (getattr(self, "_points_cache", None) or {}).get("points", 0)
+        scroll_content.controls.append(ft.Container(
+            content=ft.Row([
+                ft.Container(content=ft.Icon(ft.icons.STARS, size=22, color=ft.colors.AMBER),
+                    width=40, height=40, bgcolor=ft.colors.AMBER_50,
+                    border_radius=12, alignment=ft.alignment.center),
+                ft.Container(width=12),
+                ft.Column([
+                    ft.Text("我的积分", size=15, weight=ft.FontWeight.W_600, color=self.clr_text),
+                    ft.Container(height=2),
+                    ft.Text("签到赚积分，查看排名", size=11, color=self.clr_text2),
+                ], spacing=0, expand=True),
+                ft.Row([
+                    ft.Text(str(_my_points_display), size=20, weight=ft.FontWeight.BOLD, color=ft.colors.AMBER),
+                    ft.Container(width=2),
+                    ft.Icon(ft.icons.CHEVRON_RIGHT, size=18, color=self.clr_text3),
+                ], spacing=0),
+            ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            bgcolor=self.clr_card, border_radius=14, padding=14,
+            margin=ft.margin.only(16, 6, 16, 6),
+            on_click=lambda e: self._open_points_page(),
+        ))
+
         # 未登录时显示登录入口
         if not self.current_user:
             scroll_content.controls.append(ft.Container(height=10))
@@ -4660,10 +9062,892 @@ class TempMailApp:
         # 角色已经在加载页从 user-role 接口获取了最新角色，不需要再从消息中同步旧角色
         # （去掉了 _sync_role_from_chat 调用，避免用消息中的旧角色覆盖最新角色）
 
+    # ========== 积分中心页面 ==========
+    def _load_points_data_silent(self):
+        """静默加载积分数据到缓存（加载页预加载用，只存缓存不刷新页面）"""
+        try:
+            if not self.current_user:
+                return
+            user_id = self.current_user.get("id", "")
+            if not user_id:
+                return
+            points_data = {"_loaded": True}
+            # 获取积分概览+签到记录
+            try:
+                ok1, result1 = self._remote_api_request("GET", "user-points",
+                    params={"user_id": user_id})
+                if ok1 and isinstance(result1, dict) and result1.get("ok"):
+                    d = result1.get("data", {})
+                    points_data["points"] = d.get("points", 0)
+                    points_data["rank"] = d.get("rank", 0)
+                    points_data["checked_in_today"] = d.get("checked_in_today", False)
+                    points_data["continuous_days"] = d.get("continuous_days", 0)
+                    points_data["total_users"] = d.get("total_users", 0)
+                    points_data["checkin_records"] = d.get("checkin_records", [])
+            except Exception:
+                pass
+            # 获取排行榜
+            try:
+                ok2, result2 = self._remote_api_request("GET", "points-rank",
+                    params={"user_id": user_id, "limit": 50, "period": "week"})
+                if ok2 and isinstance(result2, dict) and result2.get("ok"):
+                    d = result2.get("data", {})
+                    points_data["rank_list"] = d.get("rank_list", [])
+                    points_data["my_rank"] = d.get("my_rank")
+            except Exception:
+                pass
+            self._points_cache = points_data
+            # 加载用户已购商品
+            try:
+                ok3, result3 = self._remote_api_request("GET", "user-purchases",
+                    params={"user_id": user_id})
+                if ok3 and isinstance(result3, dict) and result3.get("ok"):
+                    self._purchases_cache = result3.get("data", result3)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _load_points_data(self):
+        """后台加载积分数据和排行榜（API对接版）"""
+        try:
+            if not self.current_user:
+                self._points_cache = {
+                    "_loaded": True, "points": 0, "rank": 0,
+                    "checked_in_today": False, "continuous_days": 0,
+                    "checkin_records": [], "rank_list": [], "my_rank": None,
+                    "_not_logged_in": True,
+                }
+                self.page.run_thread(self.render_points_page)
+                return
+
+            user_id = self.current_user.get("id", "")
+            if not user_id:
+                self._points_cache = {
+                    "_loaded": True, "points": 0, "rank": 0,
+                    "checked_in_today": False, "continuous_days": 0,
+                    "checkin_records": [], "rank_list": [], "my_rank": None,
+                }
+                self.page.run_thread(self.render_points_page)
+                return
+
+            # 并行获取：积分概览（含签到记录）+ 排行榜
+            points_data = {"_loaded": True}
+
+            # 1. 获取我的积分 + 签到记录
+            try:
+                ok1, result1 = self._remote_api_request("GET", "user-points",
+                    params={"user_id": user_id})
+                if ok1 and isinstance(result1, dict) and result1.get("ok"):
+                    d = result1.get("data", {})
+                    points_data["points"] = d.get("points", 0)
+                    points_data["rank"] = d.get("rank", 0)
+                    points_data["checked_in_today"] = d.get("checked_in_today", False)
+                    points_data["continuous_days"] = d.get("continuous_days", 0)
+                    points_data["total_users"] = d.get("total_users", 0)
+                    points_data["checkin_records"] = d.get("checkin_records", [])
+                else:
+                    points_data["points"] = 0
+                    points_data["rank"] = 0
+                    points_data["checked_in_today"] = False
+                    points_data["continuous_days"] = 0
+                    points_data["checkin_records"] = []
+            except Exception as e:
+                print(f"[积分] 获取积分失败: {e}")
+                points_data["points"] = 0
+                points_data["rank"] = 0
+                points_data["checked_in_today"] = False
+                points_data["continuous_days"] = 0
+                points_data["checkin_records"] = []
+
+            # 2. 获取排行榜
+            try:
+                ok2, result2 = self._remote_api_request("GET", "points-rank",
+                    params={"user_id": user_id, "limit": 50, "period": "week"})
+                if ok2 and isinstance(result2, dict) and result2.get("ok"):
+                    d = result2.get("data", {})
+                    points_data["rank_list"] = d.get("rank_list", [])
+                    points_data["my_rank"] = d.get("my_rank")
+                    # 从排行榜中找到当前用户的真实排名，覆盖user-points返回的rank
+                    for item in points_data["rank_list"]:
+                        if isinstance(item, dict) and str(item.get("user_id")) == str(user_id):
+                            points_data["rank"] = item.get("rank", points_data.get("rank", 0))
+                            break
+                else:
+                    points_data["rank_list"] = []
+                    points_data["my_rank"] = None
+            except Exception as e:
+                print(f"[积分] 获取排行榜失败: {e}")
+                points_data["rank_list"] = []
+                points_data["my_rank"] = None
+
+            self._points_cache = points_data
+
+            # 3. 加载用户已购商品
+            try:
+                ok3, result3 = self._remote_api_request("GET", "user-purchases",
+                    params={"user_id": user_id})
+                if ok3 and isinstance(result3, dict) and result3.get("ok"):
+                    self._purchases_cache = result3.get("data", result3)
+                else:
+                    self._purchases_cache = None
+            except Exception as e:
+                print(f"[积分] 获取购买记录失败: {e}")
+                self._purchases_cache = None
+
+            self.page.run_thread(self.render_points_page)
+        except Exception as e:
+            print(f"[积分] 加载数据异常: {e}")
+            self._points_cache = {
+                "_loaded": True, "points": 0, "rank": 0,
+                "checked_in_today": False, "continuous_days": 0,
+                "checkin_records": [], "rank_list": [], "my_rank": None,
+            }
+            self.page.run_thread(self.render_points_page)
+
+    def _open_points_page(self):
+        """打开积分中心（有缓存则不重新加载，签到后才刷新）"""
+        # 如果缓存已加载，直接显示，不重新请求API
+        cached = getattr(self, '_points_cache', None)
+        if cached and isinstance(cached, dict) and cached.get("_loaded"):
+            self.render_points_page()
+        else:
+            # 没有缓存时才加载
+            self._points_cache = None
+            self._purchases_cache = None
+            self.render_points_page()
+
+    def render_points_page(self):
+        """积分中心页面（API对接版）"""
+        # 停止之前的倒计时线程
+        self._checkin_countdown_running = False
+        self._hide_navbar()
+        self.content.controls.clear()
+        self.content.scroll = None
+
+        # ---- 顶部固定栏 ----
+        self.content.controls.append(ft.Container(
+            content=ft.Row([
+                ft.IconButton(ft.icons.ARROW_BACK, icon_size=22,
+                    on_click=lambda e: self.render_me_page()),
+                ft.Text("积分中心", size=20, weight=ft.FontWeight.BOLD, expand=True, color=self.clr_text),
+            ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.padding.only(8, 45, 12, 8),
+            bgcolor=self.clr_bg,
+        ))
+        self.content.controls.append(ft.Container(height=1, bgcolor=self.clr_border))
+
+        scroll_content = ft.Column([], spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
+
+        # 未登录提示
+        if not self.current_user:
+            scroll_content.controls.append(ft.Container(
+                content=ft.Column([
+                    ft.Container(content=ft.Icon(ft.icons.LOCK_OUTLINE, size=48, color=ft.colors.GREY_400),
+                        alignment=ft.alignment.center),
+                    ft.Container(height=12),
+                    ft.Text("登录后查看积分和排名", size=15, color=self.clr_text2),
+                    ft.Container(height=16),
+                    ft.ElevatedButton("去登录", expand=True, height=44,
+                        style=ft.ButtonStyle(bgcolor=THEME_COLOR, color=ft.colors.WHITE),
+                        on_click=lambda e: self.show_fullscreen_login()),
+                ], alignment=ft.MainAxisAlignment.CENTER,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=0),
+                alignment=ft.alignment.center,
+                padding=ft.padding.symmetric(vertical=60),
+            ))
+            self.content.controls.append(scroll_content)
+            self.page.update()
+            return
+
+        # 数据未加载时显示加载中，并启动后台加载
+        _cache = getattr(self, "_points_cache", None)
+        if not _cache or not _cache.get("_loaded"):
+            scroll_content.controls.append(ft.Container(
+                content=ft.Column([
+                    ft.ProgressRing(width=36, height=36, color=THEME_COLOR, stroke_width=3),
+                    ft.Container(height=12),
+                    ft.Text("加载中...", size=14, color=self.clr_text2),
+                ], alignment=ft.MainAxisAlignment.CENTER,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=0),
+                alignment=ft.alignment.center,
+                padding=ft.padding.symmetric(vertical=80),
+            ))
+            self.content.controls.append(scroll_content)
+            self.page.update()
+            threading.Thread(target=self._load_points_data, daemon=True).start()
+            return
+
+        pc = self._points_cache
+        my_points = self._get_display_points()
+        checked_in_today = pc.get("checked_in_today", False)
+        continuous_days = pc.get("continuous_days", 0)
+        checkin_records = pc.get("checkin_records", [])
+        rank_list = pc.get("rank_list", [])
+        my_rank_info = pc.get("my_rank")
+
+        # 先过滤+按签到天数排序，得到真实排名
+        filtered_rank = []
+        for item in rank_list:
+            if isinstance(item, dict):
+                name = item.get("name", "") or ""
+                if name and name.strip() and name.strip() != "匿名用户":
+                    filtered_rank.append(item)
+        sorted_rank = sorted(filtered_rank, key=lambda x: x.get("checkin_days", 0) if isinstance(x, dict) else 0, reverse=True)
+        for idx, item in enumerate(sorted_rank):
+            if isinstance(item, dict):
+                item["rank"] = idx + 1
+
+        # 从排序后的列表中找当前用户的真实排名
+        my_rank = 0
+        if self.current_user:
+            cur_uid = str(self.current_user.get("id", ""))
+            for item in sorted_rank:
+                if isinstance(item, dict) and str(item.get("user_id", "")) == cur_uid:
+                    my_rank = item.get("rank", 0)
+                    break
+        if not my_rank and my_rank_info and isinstance(my_rank_info, dict):
+            my_rank = my_rank_info.get("rank", 0)
+
+        # ---- 积分头部卡片（金色） ----
+        scroll_content.controls.append(ft.Container(
+            content=ft.Column([
+                ft.Row([
+                    ft.Container(content=ft.Icon(ft.icons.STARS, size=28, color=ft.colors.WHITE),
+                        width=52, height=52, bgcolor=ft.colors.with_opacity(0.2, ft.colors.WHITE),
+                        border_radius=26, alignment=ft.alignment.center),
+                    ft.Container(width=14),
+                    ft.Column([
+                        ft.Text("我的积分", size=13, color=ft.colors.WHITE70),
+                        ft.Container(height=2),
+                        ft.Text(str(my_points), size=32, weight=ft.FontWeight.BOLD, color=ft.colors.WHITE),
+                    ], spacing=0, expand=True),
+                    ft.Column([
+                        ft.Text("当前排名", size=13, color=ft.colors.WHITE70),
+                        ft.Container(height=2),
+                        ft.Text(f"第 {my_rank} 名" if my_rank else "未上榜", size=20,
+                            weight=ft.FontWeight.BOLD, color=ft.colors.WHITE),
+                    ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.END),
+                ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ft.Container(height=12),
+                ft.Container(height=1, bgcolor=ft.colors.with_opacity(0.2, ft.colors.WHITE)),
+                ft.Container(height=10),
+                ft.Row([
+                    ft.Icon(ft.icons.LOCAL_FIRE_DEPARTMENT, size=14, color=ft.colors.WHITE),
+                    ft.Container(width=4),
+                    ft.Text(f"连续签到 {continuous_days} 天", size=12, color=ft.colors.WHITE),
+                    ft.Container(width=16),
+                    ft.Icon(ft.icons.CALENDAR_TODAY, size=14, color=ft.colors.WHITE),
+                    ft.Container(width=4),
+                    ft.Text("每日签到 +10 积分", size=12, color=ft.colors.WHITE),
+                ], spacing=0),
+            ], spacing=0),
+            bgcolor=ft.colors.AMBER, border_radius=16, padding=20,
+            margin=ft.margin.only(16, 12, 16, 6),
+        ))
+
+        # ---- 签到按钮 + 距下次签到剩余时间（实时更新） ----
+        if checked_in_today:
+            checkin_btn = ft.Container(
+                content=ft.Row([
+                    ft.Icon(ft.icons.CHECK_CIRCLE, size=18, color=ft.colors.WHITE),
+                    ft.Container(width=6),
+                    ft.Text("今日已签到", size=15, weight=ft.FontWeight.W_600, color=ft.colors.WHITE),
+                ], alignment=ft.MainAxisAlignment.CENTER, spacing=0),
+                height=48, bgcolor=ft.colors.GREY_400, border_radius=12,
+            )
+            remain_text = ft.Text("距下次签到：计算中...", size=11,
+                color=self.clr_text2, text_align=ft.TextAlign.CENTER)
+            checkin_area = ft.Column([
+                checkin_btn,
+                ft.Container(height=6),
+                remain_text,
+            ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER)
+            # 启动倒计时实时更新线程
+            self._checkin_countdown_running = False
+            if hasattr(self, "_checkin_countdown_thread") and self._checkin_countdown_thread:
+                self._checkin_countdown_running = False
+            self._checkin_countdown_running = True
+            def _update_countdown():
+                while getattr(self, "_checkin_countdown_running", False):
+                    try:
+                        _now_ts = time.time()
+                        _tomorrow_str = time.strftime("%Y-%m-%d", time.localtime(_now_ts + 86400)) + " 00:00:00"
+                        _tomorrow_ts = time.mktime(time.strptime(_tomorrow_str, "%Y-%m-%d %H:%M:%S"))
+                        _remain = int(max(0, _tomorrow_ts - _now_ts))
+                        _rh = _remain // 3600
+                        _rm = (_remain % 3600) // 60
+                        _rs = _remain % 60
+                        remain_text.value = f"距下次签到：{_rh}小时{_rm}分{_rs}秒"
+                        self.page.update()
+                    except Exception:
+                        pass
+                    time.sleep(1)
+            self._checkin_countdown_thread = threading.Thread(target=_update_countdown, daemon=True)
+            self._checkin_countdown_thread.start()
+        else:
+            checkin_btn = ft.Container(
+                content=ft.Row([
+                    ft.Icon(ft.icons.EVENT_AVAILABLE, size=18, color=ft.colors.WHITE),
+                    ft.Container(width=6),
+                    ft.Text("立即签到 +10积分", size=15, weight=ft.FontWeight.W_600, color=ft.colors.WHITE),
+                ], alignment=ft.MainAxisAlignment.CENTER, spacing=0),
+                height=48, bgcolor=ft.colors.AMBER, border_radius=12,
+                on_click=lambda e: self._do_check_in(),
+                ink=True,
+            )
+            checkin_area = checkin_btn
+        scroll_content.controls.append(ft.Container(
+            content=checkin_area,
+            padding=ft.padding.symmetric(horizontal=16),
+            margin=ft.margin.only(0, 6, 0, 6),
+        ))
+
+        # ---- 签到日历（固定周一到周日排列） ----
+        weekday_labels = ["一", "二", "三", "四", "五", "六", "日"]
+        today_str = time.strftime("%Y-%m-%d")
+        # 构建日期->签到状态映射
+        record_map = {}
+        for r in checkin_records:
+            if isinstance(r, dict) and r.get("date"):
+                record_map[r["date"]] = r.get("checked", False)
+        # 计算本周一的日期
+        today_ts = time.mktime(time.strptime(today_str, "%Y-%m-%d"))
+        today_wday = time.localtime(today_ts).tm_wday  # 周一=0
+        monday_ts = today_ts - today_wday * 86400
+        day_cells = []
+        for i in range(7):
+            day_ts = monday_ts + i * 86400
+            day_date = time.strftime("%Y-%m-%d", time.localtime(day_ts))
+            day_label = weekday_labels[i]
+            is_today = (day_date == today_str)
+            checked = record_map.get(day_date, False)
+            cell_bg = ft.colors.AMBER if checked else (
+                ft.colors.AMBER_50 if is_today else self.clr_input_bg)
+            cell_text_color = ft.colors.WHITE if checked else (
+                ft.colors.AMBER if is_today else self.clr_text2)
+            icon = ft.icons.CHECK if checked else (ft.icons.TODAY if is_today else ft.icons.CIRCLE)
+            icon_size = 16 if checked else 14
+            day_cells.append(ft.Container(
+                content=ft.Column([
+                    ft.Text(day_label, size=10, color=cell_text_color),
+                    ft.Container(height=4),
+                    ft.Container(content=ft.Icon(icon, size=icon_size, color=cell_text_color),
+                        width=28, height=28,
+                        bgcolor=ft.colors.with_opacity(0.15, cell_bg) if not checked else ft.colors.TRANSPARENT,
+                        border_radius=14, alignment=ft.alignment.center),
+                ], alignment=ft.MainAxisAlignment.CENTER,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=0),
+                expand=True, padding=ft.padding.symmetric(vertical=8),
+            ))
+        scroll_content.controls.append(ft.Container(
+            content=ft.Column([
+                ft.Text("签到记录", size=13, color=self.clr_text2, weight=ft.FontWeight.W_600),
+                ft.Container(height=8),
+                ft.Row(day_cells, spacing=4),
+            ], spacing=0),
+            bgcolor=self.clr_card, border_radius=14, padding=14,
+            margin=ft.margin.only(16, 6, 16, 6),
+        ))
+
+        # ---- 积分商城入口 ----
+        scroll_content.controls.append(ft.Container(
+            content=ft.Row([
+                ft.Container(content=ft.Icon(ft.icons.STORE, size=22, color=ft.colors.WHITE),
+                    width=42, height=42, bgcolor=ft.colors.PURPLE, border_radius=12,
+                    alignment=ft.alignment.center),
+                ft.Container(width=12),
+                ft.Column([
+                    ft.Text("积分商城", size=15, weight=ft.FontWeight.W_600, color=self.clr_text),
+                    ft.Container(height=2),
+                    ft.Text("用积分兑换网盘权限等好礼", size=11, color=self.clr_text2),
+                ], spacing=0, expand=True),
+                ft.Icon(ft.icons.CHEVRON_RIGHT, size=18, color=self.clr_text3),
+            ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            bgcolor=self.clr_card, border_radius=14, padding=14,
+            margin=ft.margin.only(16, 6, 16, 6),
+            on_click=lambda e: self.render_points_shop(),
+            ink=True,
+        ))
+
+        # ---- 签到排行榜 ----
+        scroll_content.controls.append(ft.Container(
+            content=ft.Row([
+                ft.Container(width=3, height=12, bgcolor=ft.colors.AMBER, border_radius=2),
+                ft.Container(width=6),
+                ft.Text("签到排行榜", size=13, color=self.clr_text2, weight=ft.FontWeight.W_600),
+                ft.Container(width=8),
+                ft.Text("按签到天数", size=11, color=self.clr_text3),
+            ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.padding.only(20, 12, 20, 6),
+        ))
+
+        # sorted_rank 已在页面顶部计算（过滤+按签到天数排序）
+
+        if not sorted_rank:
+            scroll_content.controls.append(ft.Container(
+                content=ft.Text("暂无排行数据", size=13, color=self.clr_text2,
+                    text_align=ft.TextAlign.CENTER),
+                alignment=ft.alignment.center,
+                padding=ft.padding.symmetric(vertical=20),
+            ))
+        else:
+            for item in sorted_rank:
+                rank_num = item.get("rank", 0)
+                item_name = item.get("name", "匿名用户") or "匿名用户"
+                item_points = item.get("points", 0)
+                item_checkin_days = item.get("checkin_days", 0)
+                item_qq = item.get("qq", "") or ""
+
+                # 前三名特殊颜色
+                if rank_num == 1:
+                    rank_icon = ft.icons.LOOKS_ONE
+                    rank_color = ft.colors.AMBER
+                    rank_bg = ft.colors.AMBER_50
+                elif rank_num == 2:
+                    rank_icon = ft.icons.LOOKS_TWO
+                    rank_color = ft.colors.GREY_500
+                    rank_bg = ft.colors.GREY_100
+                elif rank_num == 3:
+                    rank_icon = ft.icons.LOOKS_3
+                    rank_color = ft.colors.ORANGE_400
+                    rank_bg = ft.colors.ORANGE_50
+                else:
+                    rank_icon = None
+                    rank_color = self.clr_text2
+                    rank_bg = self.clr_input_bg
+
+                # 排名显示
+                if rank_icon:
+                    rank_widget = ft.Container(content=ft.Icon(rank_icon, size=20, color=rank_color),
+                        width=32, height=32, alignment=ft.alignment.center)
+                else:
+                    rank_widget = ft.Container(content=ft.Text(str(rank_num), size=14,
+                        weight=ft.FontWeight.W_600, color=rank_color),
+                        width=32, height=32, alignment=ft.alignment.center)
+
+                # 头像（有QQ显示QQ头像，加载失败或无QQ显示名字首字母）
+                avatar_text = item_name[0].upper() if item_name else "U"
+                if item_qq:
+                    avatar_widget = ft.Container(
+                        content=ft.Image(src=f"https://q1.qlogo.cn/g?b=qq&nk={item_qq}&s=100",
+                            width=36, height=36, fit=ft.ImageFit.COVER, border_radius=18,
+                            error_content=ft.Container(
+                                content=ft.Text(avatar_text, size=14, weight=ft.FontWeight.BOLD, color=ft.colors.WHITE),
+                                width=36, height=36, bgcolor=THEME_COLOR, border_radius=18,
+                                alignment=ft.alignment.center)),
+                        width=36, height=36, border_radius=18, clip_behavior=ft.ClipBehavior.ANTI_ALIAS)
+                else:
+                    avatar_widget = ft.Container(
+                        content=ft.Text(avatar_text, size=14, weight=ft.FontWeight.BOLD, color=ft.colors.WHITE),
+                        width=36, height=36, bgcolor=THEME_COLOR, border_radius=18,
+                        alignment=ft.alignment.center)
+
+                scroll_content.controls.append(ft.Container(
+                    content=ft.Row([
+                        rank_widget,
+                        ft.Container(width=8),
+                        avatar_widget,
+                        ft.Container(width=10),
+                        ft.Text(item_name, size=14, expand=True, color=self.clr_text,
+                            weight=ft.FontWeight.W_500),
+                        # 积分（展示用）
+                        ft.Text(str(item_points), size=13, weight=ft.FontWeight.W_600, color=ft.colors.AMBER),
+                        ft.Container(width=1),
+                        ft.Icon(ft.icons.STARS, size=12, color=ft.colors.AMBER),
+                        ft.Container(width=8),
+                        # 签到天数（排行依据）
+                        ft.Container(content=ft.Row([
+                            ft.Text(str(item_checkin_days), size=13, weight=ft.FontWeight.BOLD, color=THEME_COLOR),
+                            ft.Container(width=1),
+                            ft.Icon(ft.icons.EVENT_AVAILABLE, size=12, color=THEME_COLOR),
+                        ], spacing=0), bgcolor=ft.colors.with_opacity(0.1, THEME_COLOR),
+                            border_radius=8, padding=ft.padding.symmetric(horizontal=6, vertical=3)),
+                    ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    bgcolor=self.clr_card, border_radius=12, padding=ft.padding.symmetric(horizontal=12, vertical=10),
+                    margin=ft.margin.only(16, 2, 16, 2),
+                ))
+
+        # 我的排名（如果不在前N名，底部高亮显示）
+        if my_rank_info and isinstance(my_rank_info, dict):
+            my_rank_num = my_rank_info.get("rank", 0)
+            my_name_display = my_rank_info.get("name", "我") or "我"
+            my_points_display = my_rank_info.get("points", my_points)
+            my_checkin_days = my_rank_info.get("checkin_days", pc.get("continuous_days", 0))
+            my_qq_display = my_rank_info.get("qq", "") or ""
+            # 检查是否已经在 sorted_rank 中
+            already_in_list = any(
+                item.get("user_id") == self.current_user.get("id")
+                for item in sorted_rank if isinstance(item, dict)
+            )
+            if not already_in_list and my_rank_num:
+                scroll_content.controls.append(ft.Container(height=6))
+                my_avatar_text = my_name_display[0].upper() if my_name_display else "U"
+                if my_qq_display:
+                    my_avatar = ft.Container(
+                        content=ft.Image(src=f"https://q1.qlogo.cn/g?b=qq&nk={my_qq_display}&s=100",
+                            width=36, height=36, fit=ft.ImageFit.COVER, border_radius=18,
+                            error_content=ft.Container(
+                                content=ft.Text(my_avatar_text, size=14, weight=ft.FontWeight.BOLD, color=ft.colors.WHITE),
+                                width=36, height=36, bgcolor=THEME_COLOR, border_radius=18,
+                                alignment=ft.alignment.center)),
+                        width=36, height=36, border_radius=18, clip_behavior=ft.ClipBehavior.ANTI_ALIAS)
+                else:
+                    my_avatar = ft.Container(
+                        content=ft.Text(my_avatar_text, size=14, weight=ft.FontWeight.BOLD, color=ft.colors.WHITE),
+                        width=36, height=36, bgcolor=THEME_COLOR, border_radius=18,
+                        alignment=ft.alignment.center)
+                scroll_content.controls.append(ft.Container(
+                    content=ft.Row([
+                        ft.Container(content=ft.Text(str(my_rank_num), size=14, weight=ft.FontWeight.W_600,
+                            color=THEME_COLOR), width=32, height=32, alignment=ft.alignment.center),
+                        ft.Container(width=8),
+                        my_avatar,
+                        ft.Container(width=10),
+                        ft.Text(my_name_display, size=14, expand=True, color=THEME_COLOR,
+                            weight=ft.FontWeight.W_600),
+                        # 我的积分
+                        ft.Text(str(my_points_display), size=13, weight=ft.FontWeight.W_600, color=THEME_COLOR),
+                        ft.Container(width=1),
+                        ft.Icon(ft.icons.STARS, size=12, color=THEME_COLOR),
+                        ft.Container(width=8),
+                        # 我的签到天数
+                        ft.Container(content=ft.Row([
+                            ft.Text(str(my_checkin_days), size=13, weight=ft.FontWeight.BOLD, color=THEME_COLOR),
+                            ft.Container(width=1),
+                            ft.Icon(ft.icons.EVENT_AVAILABLE, size=12, color=THEME_COLOR),
+                        ], spacing=0), bgcolor=ft.colors.with_opacity(0.15, THEME_COLOR),
+                            border_radius=8, padding=ft.padding.symmetric(horizontal=6, vertical=3)),
+                    ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    bgcolor=ft.colors.BLUE_50, border_radius=12,
+                    padding=ft.padding.symmetric(horizontal=12, vertical=10),
+                    margin=ft.margin.only(16, 2, 16, 2),
+                    border=ft.border.all(1.5, THEME_COLOR),
+                ))
+
+        scroll_content.controls.append(ft.Container(height=20))
+        self.content.controls.append(scroll_content)
+        self.page.update()
+
+    def _do_check_in(self):
+        """执行签到（弹小窗显示状态，成功后后台刷新数据）"""
+        if not self.current_user:
+            self._show_toast("请先登录后再签到", "warning")
+            return
+
+        user_id = self.current_user.get("id", "")
+        if not user_id:
+            self._show_toast("用户信息异常，请重新登录", "error")
+            return
+
+        # 弹出签到中对话框（不隐藏当前页面）
+        checkin_icon = ft.ProgressRing(width=36, height=36, color=THEME_COLOR, stroke_width=3)
+        checkin_text = ft.Text("签到中...", size=15, color=self.clr_text, weight=ft.FontWeight.W_600)
+        checkin_sub = ft.Text("请稍候", size=12, color=self.clr_text2)
+        checkin_dlg = ft.AlertDialog(
+            content=ft.Container(
+                content=ft.Column([
+                    checkin_icon,
+                    ft.Container(height=12),
+                    checkin_text,
+                    ft.Container(height=4),
+                    checkin_sub,
+                ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER, tight=True),
+                padding=ft.padding.all(24),
+                width=200,
+            ),
+        )
+        self.page.dialog = checkin_dlg
+        checkin_dlg.open = True
+        self.page.update()
+
+        def checkin_thread():
+            try:
+                ok, result = self._remote_api_request("POST", "daily-checkin",
+                    body={"user_id": user_id})
+                if ok and isinstance(result, dict) and result.get("ok"):
+                    d = result.get("data", {})
+                    earned = d.get("points_earned", 10)
+                    total_points = d.get("total_points", 0)
+                    new_continuous = d.get("continuous_days", 0)
+
+                    # 更新对话框为签到成功
+                    def show_success():
+                        checkin_icon = ft.Icon(ft.icons.CHECK_CIRCLE, size=40, color=ft.colors.GREEN)
+                        checkin_text.value = f"签到成功！+{earned} 积分"
+                        checkin_text.color = ft.colors.GREEN
+                        checkin_sub.value = f"连续签到 {new_continuous} 天"
+                        # 替换进度环为成功图标
+                        checkin_dlg.content.content.controls[0] = checkin_icon
+                        self.page.update()
+                    self.page.run_thread(show_success)
+
+                    # 后台刷新积分数据（排行榜等），不隐藏当前页面
+                    def refresh_and_close():
+                        try:
+                            # 先更新本地缓存的基本信息
+                            if isinstance(getattr(self, "_points_cache", None), dict):
+                                self._points_cache["points"] = total_points
+                                self._points_cache["checked_in_today"] = True
+                                self._points_cache["continuous_days"] = new_continuous
+                                records = self._points_cache.get("checkin_records", [])
+                                if records and isinstance(records[-1], dict):
+                                    records[-1]["checked"] = True
+                                    records[-1]["points_earned"] = earned
+                            # 后台重新加载完整数据（含排行榜）
+                            self._load_points_data_silent()
+                            time.sleep(0.5)
+                        except:
+                            pass
+                        # 关闭对话框并刷新页面
+                        def finish():
+                            self._close_dialog(checkin_dlg)
+                            self.render_points_page()
+                        self.page.run_thread(finish)
+
+                    threading.Thread(target=refresh_and_close, daemon=True).start()
+                else:
+                    msg = "签到失败"
+                    if isinstance(result, dict):
+                        msg = result.get("msg", "签到失败")
+                    def show_fail():
+                        self._close_dialog(checkin_dlg)
+                        self._show_toast(msg, "error")
+                    self.page.run_thread(show_fail)
+            except Exception as e:
+                print(f"[签到] 异常: {e}")
+                def show_except():
+                    self._close_dialog(checkin_dlg)
+                    self._show_toast(f"签到失败: {str(e)[:20]}", "error")
+                self.page.run_thread(show_except)
+
+        threading.Thread(target=checkin_thread, daemon=True).start()
+
+    # ========== 积分商城 ==========
+    def _get_consumed_points(self):
+        """获取本地已消费但未同步到服务器的积分（兼容旧数据）"""
+        consumed = self.settings.get("consumed_points", 0)
+        try:
+            return int(consumed)
+        except:
+            return 0
+
+    def _add_consumed_points(self, points):
+        """记录本地消费积分（兼容旧数据）"""
+        consumed = self._get_consumed_points() + points
+        self.settings["consumed_points"] = consumed
+        save_settings(self.settings)
+
+    def _get_display_points(self):
+        """获取显示用积分（优先API真实积分，减去本地未同步消费）"""
+        api_points = 0
+        try:
+            pc = getattr(self, '_points_cache', {})
+            if pc and isinstance(pc, dict):
+                api_points = pc.get("points", 0)
+        except:
+            pass
+        return max(0, api_points - self._get_consumed_points())
+
+    def _load_purchases(self):
+        """从API加载用户已购商品"""
+        if not self.current_user:
+            return
+        try:
+            user_id = self.current_user.get("id", "")
+            ok, result = self._remote_api_request("GET", "user-purchases",
+                params={"user_id": str(user_id)})
+            if ok and isinstance(result, dict):
+                data = result.get("data", result)
+                self._purchases_cache = data
+        except Exception as e:
+            print(f"加载购买记录失败: {e}")
+
+    def _get_cloud_drive_limit(self):
+        """获取用户可创建的网盘数量（默认1个，每购买一次+1）"""
+        # 优先从API缓存获取
+        try:
+            pc = getattr(self, '_purchases_cache', None)
+            if pc and isinstance(pc, dict):
+                slots = pc.get("cloud_drive_slots", 0)
+                return 1 + int(slots)
+        except:
+            pass
+        # 兜底用本地存储
+        purchased = self.settings.get("purchased_drive_slots", 0)
+        try:
+            purchased = int(purchased)
+        except:
+            purchased = 0
+        return 1 + purchased
+
+    def _get_current_cloud_drive_count(self):
+        """统计当前已创建的网盘数量（根目录下的文件夹）"""
+        try:
+            cached = getattr(self, '_cached_cloud_files', None)
+            if cached and isinstance(cached, list):
+                count = 0
+                for f in cached:
+                    if isinstance(f, dict) and f.get("type") == "folder":
+                        count += 1
+                return count
+        except:
+            pass
+        return 0
+
+    def render_points_shop(self):
+        """积分商城页面"""
+        self._hide_navbar()
+        self.content.controls.clear()
+        self.content.scroll = ft.ScrollMode.AUTO
+        self.page.floating_action_button = None
+
+        # 顶部标题栏
+        self.content.controls.append(ft.Container(
+            content=ft.Row([
+                ft.IconButton(ft.icons.ARROW_BACK, icon_size=22,
+                    on_click=lambda e: self.render_points_page()),
+                ft.Text("积分商城", size=20, weight=ft.FontWeight.BOLD, expand=True, color=self.clr_text),
+            ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.padding.only(8, 45, 12, 8),
+            bgcolor=self.clr_bg,
+        ))
+        self.content.controls.append(ft.Container(height=1, bgcolor=self.clr_border))
+
+        scroll_content = ft.Column([], spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
+
+        # 后台加载购买记录（如果未加载）
+        if not getattr(self, '_purchases_cache', None):
+            threading.Thread(target=self._load_purchases, daemon=True).start()
+
+        # 当前积分
+        my_points = self._get_display_points()
+
+        scroll_content.controls.append(ft.Container(
+            content=ft.Row([
+                ft.Container(content=ft.Icon(ft.icons.STARS, size=24, color=ft.colors.WHITE),
+                    width=48, height=48, bgcolor=ft.colors.AMBER, border_radius=14,
+                    alignment=ft.alignment.center),
+                ft.Container(width=12),
+                ft.Column([
+                    ft.Text("我的积分", size=12, color=ft.colors.WHITE70),
+                    ft.Text(str(my_points), size=26, weight=ft.FontWeight.BOLD, color=ft.colors.WHITE),
+                ], spacing=2, expand=True),
+                ft.Container(content=ft.Text("签到赚积分", size=11, color=ft.colors.WHITE),
+                    bgcolor=ft.colors.with_opacity(0.2, ft.colors.WHITE),
+                    border_radius=10, padding=ft.padding.symmetric(horizontal=10, vertical=5)),
+            ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            bgcolor=ft.colors.with_opacity(0.9, THEME_COLOR),
+            border_radius=16, padding=16,
+            margin=ft.margin.only(16, 12, 16, 6),
+        ))
+
+        # 商品列表标题
+        scroll_content.controls.append(ft.Container(
+            content=ft.Row([
+                ft.Container(width=3, height=12, bgcolor=ft.colors.PURPLE, border_radius=2),
+                ft.Container(width=6),
+                ft.Text("兑换商品", size=13, color=self.clr_text2, weight=ft.FontWeight.W_600),
+            ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.padding.only(20, 10, 20, 6),
+        ))
+
+        # 网盘权限商品
+        drive_limit = self._get_cloud_drive_limit()
+        drive_count = self._get_current_cloud_drive_count()
+        can_buy = my_points >= 50
+
+        scroll_content.controls.append(ft.Container(
+            content=ft.Column([
+                ft.Row([
+                    ft.Container(content=ft.Icon(ft.icons.CLOUD_CIRCLE, size=28, color=ft.colors.WHITE),
+                        width=52, height=52, bgcolor=ft.colors.BLUE, border_radius=14,
+                        alignment=ft.alignment.center),
+                    ft.Container(width=12),
+                    ft.Column([
+                        ft.Text("网盘创建权限", size=16, weight=ft.FontWeight.W_600, color=self.clr_text),
+                        ft.Container(height=2),
+                        ft.Text(f"当前可创建 {drive_limit} 个网盘，已创建 {drive_count} 个", size=11, color=self.clr_text2),
+                    ], spacing=0, expand=True),
+                ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ft.Container(height=12),
+                ft.Row([
+                    ft.Container(content=ft.Row([
+                        ft.Icon(ft.icons.STARS, size=14, color=ft.colors.AMBER),
+                        ft.Container(width=2),
+                        ft.Text("50", size=16, weight=ft.FontWeight.BOLD, color=ft.colors.AMBER),
+                    ], spacing=0), expand=True),
+                    ft.Container(
+                        content=ft.Text("立即兑换", size=14, weight=ft.FontWeight.W_600,
+                            color=ft.colors.WHITE if can_buy else ft.colors.GREY_400),
+                        bgcolor=THEME_COLOR if can_buy else ft.colors.GREY_300,
+                        border_radius=10, padding=ft.padding.symmetric(horizontal=20, vertical=8),
+                        on_click=lambda e: self._purchase_cloud_drive_slot() if can_buy else None,
+                        ink=True if can_buy else False,
+                    ),
+                ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ], spacing=0),
+            bgcolor=self.clr_card, border_radius=14, padding=14,
+            margin=ft.margin.only(16, 2, 16, 6),
+        ))
+
+        # 说明
+        scroll_content.controls.append(ft.Container(
+            content=ft.Text("兑换后立即到账，积分不可退还", size=11,
+                color=self.clr_text3, text_align=ft.TextAlign.CENTER),
+            alignment=ft.alignment.center,
+            padding=ft.padding.symmetric(vertical=16),
+        ))
+
+        self.content.controls.append(scroll_content)
+        self.page.update()
+
+    def _purchase_cloud_drive_slot(self):
+        """购买网盘创建权限（50积分）"""
+        if not self.current_user:
+            self._show_toast("请先登录", "warning")
+            return
+        my_points = self._get_display_points()
+        if my_points < 50:
+            self._show_toast("积分不足，需要50积分", "error")
+            return
+
+        self._show_toast("正在兑换...", "info")
+
+        def purchase_thread():
+            try:
+                user_id = self.current_user.get("id", "")
+                # 调用购买API（自动校验积分并扣除）
+                ok, result = self._remote_api_request("POST", "points-purchase",
+                    body={"user_id": str(user_id), "item": "cloud_drive_slot",
+                          "item_name": "网盘创建权限", "points": 50})
+                if ok and isinstance(result, dict) and result.get("ok"):
+                    # 购买成功：清除本地消费记录（API已真实扣除），刷新缓存
+                    if "consumed_points" in self.settings:
+                        self.settings["consumed_points"] = 0
+                        save_settings(self.settings)
+                    self._points_cache = None
+                    self._purchases_cache = None
+                    # 后台重新加载积分和购买记录
+                    threading.Thread(target=self._load_purchases, daemon=True).start()
+                    def on_success():
+                        self._show_toast("兑换成功！网盘权限+1", "success")
+                        self.render_points_shop()
+                    self.page.run_thread(on_success)
+                else:
+                    msg = "兑换失败"
+                    if isinstance(result, dict):
+                        msg = result.get("msg", "兑换失败")
+                    self.page.run_thread(lambda: self._show_toast(msg, "error"))
+            except Exception as e:
+                self.page.run_thread(lambda: self._show_toast("兑换失败: " + str(e)[:15], "error"))
+
+        threading.Thread(target=purchase_thread, daemon=True).start()
+
     # ========== 设置页面 ==========
     def render_settings_page(self):
+        self._hide_navbar()  # 进入设置页面隐藏导航栏
         self.content.controls.clear()
-        self.page.floating_action_button = None
         self.content.scroll = None  # 关闭整体滚动，标题固定
 
         # ---- 顶部固定栏 ----
@@ -4671,6 +9955,8 @@ class TempMailApp:
             content=ft.Row([
                 ft.IconButton(ft.icons.ARROW_BACK, icon_size=22,
                     on_click=lambda e: self.render_me_page()),
+                ft.IconButton(ft.icons.ARROW_BACK_IOS_NEW, icon_size=20, icon_color=self.clr_text,
+                    on_click=self._back_to_features, visible=getattr(self, "_show_back_to_features", False)),
                 ft.Text("设置", size=20, weight=ft.FontWeight.BOLD, expand=True, color=self.clr_text),
             ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
             padding=ft.padding.only(8, 45, 12, 8),
@@ -4689,32 +9975,6 @@ class TempMailApp:
                 ft.Text("通用", size=13, color=self.clr_text2, weight=ft.FontWeight.W_600),
             ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
             padding=ft.padding.only(20, 12, 20, 6),
-        ))
-
-        # 收件箱自动刷新开关
-        auto_refresh = self.settings.get("inbox_auto_refresh", True)
-        scroll_content.controls.append(ft.Container(
-            content=ft.Row([
-                ft.Container(content=ft.Icon(ft.icons.REFRESH, size=18, color=ft.colors.BLUE),
-                    width=32, height=32, bgcolor=ft.colors.BLUE_50,
-                    border_radius=8, alignment=ft.alignment.center),
-                ft.Container(width=10),
-                ft.Text("收件箱自动刷新", size=15, expand=True, color=self.clr_text),
-                ft.Switch(value=auto_refresh, active_color=THEME_COLOR,
-                    on_change=lambda e: self._toggle_auto_refresh(e.control.value)),
-            ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            bgcolor=self.clr_card, border_radius=12, padding=ft.padding.only(14, 4, 14, 4),
-            margin=ft.margin.only(16, 2, 16, 2),
-        ))
-
-        # 刷新间隔
-        interval = self.settings.get("refresh_interval", 10)
-        scroll_content.controls.append(self._build_option_row(
-            icon=ft.icons.TIMER, icon_color=ft.colors.ORANGE,
-            label="刷新间隔",
-            options=[{"label": "5秒", "value": 5}, {"label": "10秒", "value": 10}, {"label": "30秒", "value": 30}],
-            current_value=interval,
-            on_select=lambda v: self._set_refresh_interval(v),
         ))
 
         # 默认邮箱有效期
@@ -4770,6 +10030,12 @@ class TempMailApp:
         scroll_content.controls.append(self._build_menu_item(
             icon=ft.icons.CLEANING_SERVICES, icon_color=ft.colors.GREEN,
             label="清理缓存", on_click=self._clear_cache,
+        ))
+
+        # 登录设备（点击查看当前设备和历史登录记录）
+        scroll_content.controls.append(self._build_menu_item(
+            icon=ft.icons.DEVICES, icon_color=ft.colors.CYAN,
+            label="登录设备", on_click=lambda e: self._show_device_page(),
         ))
 
         # ---- 关于 ----
@@ -4828,7 +10094,7 @@ class TempMailApp:
         scroll_content.controls.append(ft.Container(height=16))
         scroll_content.controls.append(ft.Container(
             content=ft.Column([
-                ft.Text(f"YoXi邮箱 v{_app_ver}", size=12, color=self.clr_text2,
+                ft.Text(f"YoXi网盘 v{_app_ver}", size=12, color=self.clr_text2,
                     text_align=ft.TextAlign.CENTER),
                 ft.Container(height=2),
                 ft.Text("临时邮箱，触手可及", size=11,
@@ -4899,11 +10165,11 @@ class TempMailApp:
             if icon_type == "image":
                 # 图片图标（全部默认图标）
                 icon_content = ft.Container(
-                    content=ft.Image(src=icon_info["image_path"], width=44, height=44, fit=ft.ImageFit.CONTAIN),
+                    content=ft.Image(src=icon_info["image_path"], width=56, height=56, fit=ft.ImageFit.COVER),
                     width=56, height=56,
-                    bgcolor=ft.colors.WHITE if is_selected else ft.colors.GREY_100,
                     border_radius=16,
                     alignment=ft.alignment.center,
+                    clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
                     border=ft.border.all(2, THEME_COLOR) if is_selected else None,
                 )
             elif icon_type == "custom":
@@ -4941,7 +10207,12 @@ class TempMailApp:
 
         # 当前图标显示（支持图片和自定义图标）
         if current_icon_type in ("image", "custom"):
-            current_icon_widget = ft.Image(src=current_icon, width=28, height=28, fit=ft.ImageFit.CONTAIN)
+            current_icon_widget = ft.Container(
+                content=ft.Image(src=current_icon, width=32, height=32, fit=ft.ImageFit.COVER),
+                width=32, height=32, border_radius=9,
+                clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+                alignment=ft.alignment.center,
+            )
         else:
             current_icon_widget = ft.Text(current_icon, size=24, weight=ft.FontWeight.BOLD)
         
@@ -5075,8 +10346,13 @@ class TempMailApp:
         icon_type = self._get_current_app_icon_type()
         icon_value = self._get_current_app_icon()
         if icon_type in ("image", "custom"):
-            # 图片图标和自定义图标都用Image显示
-            return ft.Image(src=icon_value, width=size, height=size, fit=ft.ImageFit.CONTAIN)
+            # 图片图标和自定义图标都用圆角正方形显示
+            return ft.Container(
+                content=ft.Image(src=icon_value, width=size, height=size, fit=ft.ImageFit.COVER),
+                width=size, height=size, border_radius=size//4,
+                clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+                alignment=ft.alignment.center,
+            )
         else:
             return ft.Text(icon_value, size=size)
         icon_value = self._get_current_app_icon()
@@ -5442,6 +10718,244 @@ class TempMailApp:
         
         threading.Thread(target=check_permission_thread, daemon=True).start()
 
+    def _show_device_page(self):
+        """登录设备页面：当前设备信息 + 历史登录记录"""
+        self._hide_navbar()
+        self.content.controls.clear()
+        self.content.scroll = ft.ScrollMode.AUTO
+        self.page.floating_action_button = None
+
+        # 顶部标题栏
+        self.content.controls.append(ft.Container(
+            content=ft.Row([
+                ft.IconButton(ft.icons.ARROW_BACK, icon_size=22,
+                    on_click=lambda e: self.render_settings_page()),
+                ft.Text("登录设备", size=20, weight=ft.FontWeight.BOLD, expand=True, color=self.clr_text),
+            ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.padding.only(8, 45, 12, 8),
+            bgcolor=self.clr_bg,
+        ))
+        self.content.controls.append(ft.Container(height=1, bgcolor=self.clr_border))
+
+        scroll_content = ft.Column([], spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
+
+        # 当前设备卡片
+        scroll_content.controls.append(ft.Container(
+            content=ft.Row([
+                ft.Container(width=3, height=12, bgcolor=ft.colors.GREEN, border_radius=2),
+                ft.Container(width=6),
+                ft.Text("当前设备", size=13, color=self.clr_text2, weight=ft.FontWeight.W_600),
+            ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.padding.only(20, 14, 20, 6),
+        ))
+
+        self._cur_device_ip = ft.Text("获取中...", size=14, color=self.clr_text)
+        self._cur_device_model = ft.Text("获取中...", size=14, color=self.clr_text)
+        self._cur_device_time = ft.Text("刚刚", size=12, color=self.clr_text3)
+
+        scroll_content.controls.append(ft.Container(
+            content=ft.Column([
+                ft.Row([
+                    ft.Container(content=ft.Icon(ft.icons.DEVICES, size=22, color=ft.colors.WHITE),
+                        width=44, height=44, bgcolor=ft.colors.CYAN, border_radius=12,
+                        alignment=ft.alignment.center),
+                    ft.Container(width=12),
+                    ft.Column([
+                        self._cur_device_model,
+                        ft.Container(height=2),
+                        self._cur_device_ip,
+                    ], spacing=0, expand=True),
+                    ft.Container(content=ft.Text("在线", size=11, color=ft.colors.WHITE),
+                        bgcolor=ft.colors.GREEN, border_radius=10,
+                        padding=ft.padding.symmetric(horizontal=8, vertical=3)),
+                ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ft.Container(height=8),
+                ft.Row([
+                    ft.Icon(ft.icons.ACCESS_TIME, size=12, color=self.clr_text3),
+                    ft.Container(width=4),
+                    self._cur_device_time,
+                ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ], spacing=0),
+            bgcolor=self.clr_card, border_radius=14, padding=14,
+            margin=ft.margin.only(16, 2, 16, 6),
+        ))
+
+        # 历史登录记录
+        scroll_content.controls.append(ft.Container(
+            content=ft.Row([
+                ft.Container(width=3, height=12, bgcolor=ft.colors.GREY, border_radius=2),
+                ft.Container(width=6),
+                ft.Text("历史登录", size=13, color=self.clr_text2, weight=ft.FontWeight.W_600),
+            ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.padding.only(20, 10, 20, 6),
+        ))
+
+        self._device_history_list = ft.Column([], spacing=0)
+        scroll_content.controls.append(self._device_history_list)
+
+        # 初始显示加载中
+        self._device_history_list.controls.append(ft.Container(
+            content=ft.Column([
+                ft.ProgressRing(width=28, height=28, color=THEME_COLOR, stroke_width=2),
+                ft.Container(height=8),
+                ft.Text("加载中...", size=13, color=self.clr_text2),
+            ], alignment=ft.MainAxisAlignment.CENTER,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=0),
+            alignment=ft.alignment.center,
+            padding=ft.padding.symmetric(vertical=40),
+        ))
+
+        self.content.controls.append(scroll_content)
+        self.page.update()
+
+        # 后台获取当前设备信息和历史记录
+        threading.Thread(target=self._load_device_data, daemon=True).start()
+
+    def _load_device_data(self):
+        """加载当前设备信息和历史登录记录（对接网站API）"""
+        import platform
+        import socket
+        import time
+
+        user_id = self.current_user.get("id", "") if self.current_user else ""
+        if not user_id:
+            def update_no_login():
+                if hasattr(self, '_cur_device_ip'):
+                    self._cur_device_ip.value = "未登录"
+                if hasattr(self, '_cur_device_model'):
+                    self._cur_device_model.value = "请先登录"
+                if hasattr(self, '_device_history_list'):
+                    self._device_history_list.controls.clear()
+                    self._device_history_list.controls.append(ft.Container(
+                        content=ft.Text("登录后查看历史记录", size=13, color=self.clr_text2,
+                            text_align=ft.TextAlign.CENTER),
+                        alignment=ft.alignment.center,
+                        padding=ft.padding.symmetric(vertical=30),
+                    ))
+                self.page.update()
+            self.page.run_thread(update_no_login)
+            return
+
+        # 获取本地设备信息
+        dev = self._get_device_info()
+        device_model = f"{dev['device_model']} ({dev['os_version']})"
+        device_ip = "获取中..."
+        try:
+            import urllib.request
+            req = urllib.request.Request("https://api.ipify.org", headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                device_ip = resp.read().decode("utf-8").strip()
+        except:
+            try:
+                device_ip = socket.gethostbyname(socket.gethostname())
+            except:
+                device_ip = "未知"
+
+        # 从API获取历史登录记录
+        records = []
+        try:
+            ok, result = self._remote_api_request("GET", "user-login-devices",
+                params={"user_id": str(user_id), "limit": "20"})
+            if ok and isinstance(result, dict) and result.get("ok"):
+                records = result.get("records", [])
+        except Exception as e:
+            print(f"[设备记录] 获取失败: {e}")
+
+        login_time = time.strftime("%Y-%m-%d %H:%M:%S")
+
+        def update_ui():
+            # 当前设备
+            if hasattr(self, '_cur_device_ip'):
+                self._cur_device_ip.value = f"IP: {device_ip}"
+            if hasattr(self, '_cur_device_model'):
+                self._cur_device_model.value = device_model
+            if hasattr(self, '_cur_device_time'):
+                # 用最新一条记录的时间，如果没有则用当前时间
+                if records and isinstance(records[0], dict):
+                    self._cur_device_time.value = f"登录时间：{records[0].get('login_time', login_time)}"
+                else:
+                    self._cur_device_time.value = f"登录时间：{login_time}"
+            # 历史记录
+            if hasattr(self, '_device_history_list'):
+                self._device_history_list.controls.clear()
+                if not records:
+                    self._device_history_list.controls.append(ft.Container(
+                        content=ft.Text("暂无历史登录记录", size=13, color=self.clr_text2,
+                            text_align=ft.TextAlign.CENTER),
+                        alignment=ft.alignment.center,
+                        padding=ft.padding.symmetric(vertical=30),
+                    ))
+                else:
+                    for rec in records:
+                        if not isinstance(rec, dict):
+                            continue
+                        rec_device = rec.get("device", "未知设备")
+                        rec_ip = rec.get("ip_address", "未知")
+                        rec_time = rec.get("login_time", "")
+                        rec_status = rec.get("status", "success")
+                        status_color = ft.colors.GREEN if rec_status == "success" else ft.colors.RED
+                        status_text = "成功" if rec_status == "success" else "失败"
+                        self._device_history_list.controls.append(ft.Container(
+                            content=ft.Column([
+                                ft.Row([
+                                    ft.Container(content=ft.Icon(ft.icons.DEVICES, size=16, color=ft.colors.WHITE),
+                                        width=32, height=32, bgcolor=ft.colors.CYAN, border_radius=8,
+                                        alignment=ft.alignment.center),
+                                    ft.Container(width=10),
+                                    ft.Column([
+                                        ft.Text(rec_device, size=13, weight=ft.FontWeight.W_500, color=self.clr_text,
+                                            max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                                        ft.Container(height=2),
+                                        ft.Text(f"IP: {rec_ip}", size=11, color=self.clr_text2),
+                                    ], spacing=0, expand=True),
+                                    ft.Container(content=ft.Text(status_text, size=10, color=ft.colors.WHITE),
+                                        bgcolor=status_color, border_radius=8,
+                                        padding=ft.padding.symmetric(horizontal=6, vertical=2)),
+                                ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                                ft.Container(height=4),
+                                ft.Row([
+                                    ft.Icon(ft.icons.ACCESS_TIME, size=11, color=self.clr_text3),
+                                    ft.Container(width=4),
+                                    ft.Text(rec_time, size=11, color=self.clr_text3),
+                                ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                            ], spacing=0),
+                            bgcolor=self.clr_card, border_radius=12, padding=12,
+                            margin=ft.margin.only(16, 2, 16, 2),
+                        ))
+                self.page.update()
+        self.page.run_thread(update_ui)
+
+    def _fetch_device_info(self):
+        """获取设备登录IP和型号（先本地获取，后面对接网站API）"""
+        try:
+            import platform
+            import socket
+            # 获取设备型号（电脑名+系统）
+            device_model = f"{platform.node()} ({platform.system()} {platform.release()})"
+            # 获取公网IP
+            device_ip = "未知"
+            try:
+                import urllib.request
+                req = urllib.request.Request("https://api.ipify.org", headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    device_ip = resp.read().decode("utf-8").strip()
+            except:
+                try:
+                    device_ip = socket.gethostbyname(socket.gethostname())
+                except:
+                    device_ip = "获取失败"
+            def update_ui():
+                if hasattr(self, '_device_ip_text'):
+                    self._device_ip_text.value = device_ip
+                    self._device_ip_text.color = self.clr_text
+                if hasattr(self, '_device_model_text'):
+                    self._device_model_text.value = device_model
+                    self._device_model_text.color = self.clr_text
+                self.page.update()
+            self.page.run_thread(update_ui)
+        except Exception as e:
+            print(f"[设备信息] 获取失败: {e}")
+
     def _fetch_and_display_permission_status(self):
         """获取并显示当前用户的有效期权限状态"""
         try:
@@ -5618,6 +11132,12 @@ class TempMailApp:
         self.clr_text3 = LIGHT_TEXT3
         self.clr_border = LIGHT_BORDER
         self.clr_input_bg = LIGHT_INPUT
+        # 网盘数据缓存（加载页预加载，避免每次进入都重新请求）
+        self._cached_cloud_files = None
+        self._cached_cloud_used_mb = 0
+        self._cloud_files_loading = False
+        self.current_folder_id = 0  # 当前所在文件夹ID，0表示根目录
+        self.folder_path = []  # 文件夹路径栈，用于返回上级
 
     def _set_dark_colors(self):
         """深色主题（iOS风格）"""
@@ -5638,14 +11158,21 @@ class TempMailApp:
         label = "白天模式" if mode == "light" else ("夜间模式" if mode == "dark" else "跟随系统")
         self._show_toast("已切换到" + label)
         self.page.update()
-        # 重新渲染当前页面以应用新颜色
+        # 重新渲染当前页面以应用新颜色（4标签：0网盘/1功能/2频道/3主页）
         try:
             if self.current_tab == 0:
-                self.render_email_list()
+                self.render_cloud_drive_page()
             elif self.current_tab == 1:
-                self.render_channel_page()
+                self.render_features_page()
             elif self.current_tab == 2:
+                self.render_channel_page()
+            elif self.current_tab == 3:
                 self.render_me_page()
+        except:
+            pass
+        # 强制刷新页面背景和顶部
+        try:
+            self.page.update()
         except:
             pass
 
@@ -5654,8 +11181,8 @@ class TempMailApp:
         """显示个人主页详细信息"""
         if not self.current_user:
             return
+        self._hide_navbar()  # 进入个人主页隐藏导航栏
         self.content.controls.clear()
-        self.page.floating_action_button = None
         self.content.scroll = None  # 关闭整体滚动，标题固定
 
         qq = self.current_user.get("qq", "")
@@ -5852,6 +11379,27 @@ class TempMailApp:
         except:
             pass
 
+    def _close_dialog(self, dlg=None):
+        """通用关闭对话框方法，支持传入dlg或不传（关闭当前对话框）"""
+        try:
+            if dlg:
+                dlg.open = False
+            else:
+                # 没有传入dlg，直接关闭当前对话框
+                if self.page.dialog:
+                    try:
+                        self.page.dialog.open = False
+                    except:
+                        pass
+            self.page.update()
+        except:
+            try:
+                self.page.dialog = None
+                self.page.update()
+            except:
+                pass
+
+
     def _show_edit_name_dialog(self):
         """显示修改昵称对话框"""
         current_name = self.current_user.get("name", self.current_user.get("username", ""))
@@ -5929,69 +11477,135 @@ class TempMailApp:
             pass
 
     def _check_update(self, e=None):
-        """检查更新"""
-        try:
-            current_version = APP_CONFIG.get("app_version", "1.0.0")
-            update_url = APP_CONFIG.get("update_url", "")
-            remote_config = getattr(self, '_remote_config', {})
-            need_update = remote_config.get("need_update", False)
-            target_version = remote_config.get("target_version", "")
+        """检查更新（实时调用API）"""
+        current_version = APP_CONFIG.get("app_version", "1.0.0")
+        self._show_toast("正在检查更新...", "info")
 
-            if need_update and target_version and target_version != current_version:
-                content_text = f"发现新版本 {target_version}\n当前版本 {current_version}\n\n点击确定前往下载"
-            else:
-                content_text = f"当前已是最新版本\n版本号: {current_version}"
+        def check_thread():
+            try:
+                ok, result = self._remote_api_request("GET", "status")
+                if ok and isinstance(result, dict):
+                    need_update = result.get("need_update", False)
+                    target_version = result.get("target_version", "")
+                    download_url = result.get("download_url", "")
+                    force_update = result.get("force_update", False)
+                    # 缓存最新状态
+                    self._remote_config = result
+                    # 判断是否需要更新
+                    has_update = need_update and target_version and target_version != current_version
+                    if has_update:
+                        content_text = f"发现新版本 {target_version}\n当前版本 {current_version}\n\n点击确定前往下载"
+                    else:
+                        content_text = f"当前已是最新版本\n版本号: {current_version}"
 
-            def go_update(ev):
-                self._close_dialog()
-                if update_url:
-                    try:
-                        self.page.launch_url(update_url)
-                    except:
-                        try:
-                            import webbrowser
-                            webbrowser.open(update_url)
-                        except:
-                            pass
+                    def go_update(ev):
+                        self._close_dialog()
+                        url = download_url or APP_CONFIG.get("update_url", "")
+                        if url:
+                            try:
+                                self.page.launch_url(url)
+                            except:
+                                try:
+                                    import webbrowser
+                                    webbrowser.open(url)
+                                except:
+                                    pass
 
-            actions = [ft.TextButton("关闭", on_click=lambda ev: self._close_dialog())]
-            if need_update and target_version and target_version != current_version:
-                actions.append(ft.TextButton("去更新", on_click=go_update))
+                    actions = [ft.TextButton("关闭", on_click=lambda ev: self._close_dialog())]
+                    if has_update:
+                        actions.append(ft.TextButton("去更新", on_click=go_update))
 
-            self.page.dialog = ft.AlertDialog(
-                title=ft.Row([
-                    ft.Icon(ft.icons.UPDATE, size=22, color=THEME_COLOR),
-                    ft.Container(width=8),
-                    ft.Text("检查更新", size=18, weight=ft.FontWeight.BOLD),
-                ]),
-                content=ft.Text(content_text, size=14, color=ft.colors.GREY_700),
-                actions=actions,
-                actions_alignment=ft.MainAxisAlignment.END,
-            )
-            self.page.dialog.open = True
-            self.page.update()
-        except Exception as ex:
-            self.page.snack_bar = ft.SnackBar(ft.Text("检查更新失败: " + str(ex)[:30]))
-            self.page.snack_bar.open = True
-            self.page.update()
+                    def show_dialog():
+                        self.page.dialog = ft.AlertDialog(
+                            title=ft.Row([
+                                ft.Icon(ft.icons.UPDATE, size=22, color=THEME_COLOR),
+                                ft.Container(width=8),
+                                ft.Text("检查更新", size=18, weight=ft.FontWeight.BOLD),
+                            ]),
+                            content=ft.Text(content_text, size=14, color=ft.colors.GREY_700),
+                            actions=actions,
+                            actions_alignment=ft.MainAxisAlignment.END,
+                        )
+                        self.page.dialog.open = True
+                        self.page.update()
+                    self.page.run_thread(show_dialog)
+                else:
+                    self.page.run_thread(lambda: self._show_toast("检查更新失败，请稍后重试", "error"))
+            except Exception as ex:
+                self.page.run_thread(lambda: self._show_toast("检查更新失败: " + str(ex)[:20], "error"))
+
+        threading.Thread(target=check_thread, daemon=True).start()
 
     def _clear_cache(self, e=None):
-        """清理缓存并重新同步"""
+        """弹出清除选项：清除缓存 / 清除登录设备历史记录"""
+        def do_clear_cache(ev):
+            self._close_dialog()
+            self._do_clear_cache()
+
+        def do_clear_login_history(ev):
+            self._close_dialog()
+            self._clear_login_history()
+
+        self.page.dialog = ft.AlertDialog(
+            title=ft.Row([
+                ft.Icon(ft.icons.CLEANING_SERVICES, size=22, color=ft.colors.GREEN),
+                ft.Container(width=8),
+                ft.Text("清除数据", size=18, weight=ft.FontWeight.BOLD),
+            ]),
+            content=ft.Column([
+                ft.Container(
+                    content=ft.Row([
+                        ft.Container(content=ft.Icon(ft.icons.DELETE_SWEEP, size=18, color=ft.colors.BLUE),
+                            width=36, height=36, bgcolor=ft.colors.BLUE_50,
+                            border_radius=10, alignment=ft.alignment.center),
+                        ft.Container(width=10),
+                        ft.Column([
+                            ft.Text("清除缓存", size=15, weight=ft.FontWeight.W_600, color=self.clr_text),
+                            ft.Text("清除邮箱、频道等本地缓存数据", size=11, color=self.clr_text2),
+                        ], spacing=2, expand=True),
+                    ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    bgcolor=self.clr_card, border_radius=12, padding=12,
+                    on_click=do_clear_cache, ink=True,
+                ),
+                ft.Container(height=8),
+                ft.Container(
+                    content=ft.Row([
+                        ft.Container(content=ft.Icon(ft.icons.HISTORY_TOGGLE_OFF, size=18, color=ft.colors.RED),
+                            width=36, height=36, bgcolor=ft.colors.RED_50,
+                            border_radius=10, alignment=ft.alignment.center),
+                        ft.Container(width=10),
+                        ft.Column([
+                            ft.Text("清除登录设备记录", size=15, weight=ft.FontWeight.W_600, color=self.clr_text),
+                            ft.Text("删除网站上保存的登录历史记录", size=11, color=self.clr_text2),
+                        ], spacing=2, expand=True),
+                    ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    bgcolor=self.clr_card, border_radius=12, padding=12,
+                    on_click=do_clear_login_history, ink=True,
+                ),
+            ], spacing=0, tight=True),
+            actions=[
+                ft.TextButton("取消", on_click=lambda ev: self._close_dialog()),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self.page.dialog.open = True
+        self.page.update()
+
+    def _do_clear_cache(self):
+        """实际执行清除缓存"""
         try:
-            # 清除各类缓存
             self._cloud_emails_cache = []
             self._msg_counts = {}
             self._last_email_sync_time = 0
+            self._points_cache = None
+            self._cached_cloud_files = None
             if hasattr(self, '_cached_channel_messages'):
                 self._cached_channel_messages = []
             if hasattr(self, '_last_channel_msg_load_time'):
                 self._last_channel_msg_load_time = 0
 
-            self.page.snack_bar = ft.SnackBar(ft.Text("缓存已清理，正在重新同步..."))
-            self.page.snack_bar.open = True
-            self.page.update()
+            self._show_toast("缓存已清理，正在重新同步...", "success")
 
-            # 后台重新同步邮箱数据（不跳转页面）
             def reload_background():
                 time.sleep(0.3)
                 try:
@@ -6000,16 +11614,45 @@ class TempMailApp:
                     pass
             threading.Thread(target=reload_background, daemon=True).start()
         except Exception as ex:
-            self.page.snack_bar = ft.SnackBar(ft.Text("清理缓存失败: " + str(ex)[:30]))
-            self.page.snack_bar.open = True
-            self.page.update()
+            self._show_toast("清理缓存失败: " + str(ex)[:20], "error")
+
+    def _clear_login_history(self):
+        """清除登录设备历史记录（调用网站API）"""
+        if not self.current_user:
+            self._show_toast("请先登录", "warning")
+            return
+        user_id = self.current_user.get("id", "")
+        if not user_id:
+            self._show_toast("用户信息异常", "error")
+            return
+        self._show_toast("正在清除登录记录...", "info")
+
+        def clear_thread():
+            try:
+                ok, result = self._remote_api_request("DELETE", "user-login-devices",
+                    params={"user_id": str(user_id)})
+                if ok and isinstance(result, dict) and result.get("ok"):
+                    self.page.run_thread(lambda: self._show_toast("登录记录已清除", "success"))
+                else:
+                    msg = "网站暂未开放清除登录记录功能"
+                    if isinstance(result, dict) and result.get("msg"):
+                        msg = result.get("msg")
+                    self.page.run_thread(lambda: self._show_toast(msg, "error"))
+            except Exception as ex:
+                err_str = str(ex)
+                if "404" in err_str or "405" in err_str:
+                    self.page.run_thread(lambda: self._show_toast("网站暂未开放此功能，请在后台添加接口", "error"))
+                else:
+                    self.page.run_thread(lambda: self._show_toast("清除失败: " + err_str[:15], "error"))
+
+        threading.Thread(target=clear_thread, daemon=True).start()
 
     def _join_qq_group(self, e=None):
-        """加入QQ群（直接跳转QQ群，不打开浏览器）"""
+        """加入QQ群（浏览器打开QQ群网页）"""
         try:
             qq_group_number = "1093927643"
-            # 直接跳转QQ群的协议链接
-            qq_group_url = f"mqqwpa://im/chat?chat_type=group&uin={qq_group_number}&version=1"
+            # 浏览器打开QQ群网页链接
+            qq_group_url = f"https://qm.qq.com/cgi-bin/qm/qr?k={qq_group_number}&jump_from=webapi"
             try:
                 self.page.launch_url(qq_group_url)
             except:
@@ -6024,7 +11667,7 @@ class TempMailApp:
     def _show_about_dialog(self, e=None):
         """显示关于应用弹窗"""
         try:
-            app_name = APP_CONFIG.get("app_name", "YoXi邮箱")
+            app_name = APP_CONFIG.get("app_name", "YoXi网盘")
             app_version = APP_CONFIG.get("app_version", "1.0.0")
             # 获取当前应用图标组件（支持图片图标和远程图标）
             app_icon_widget = self._build_app_icon_widget(size=28)
@@ -6090,6 +11733,19 @@ class TempMailApp:
             time.sleep(1.2)
             self.current_user = None
             self.data["current_user"] = None
+            self._points_cache = None
+            self._purchases_cache = None
+            self._cached_cloud_files = None
+            self._cached_cloud_used_mb = 0
+            self._cloud_emails_cache = []
+            # 清除本地消费记录（切换账号后不继承）
+            if "consumed_points" in self.settings:
+                self.settings["consumed_points"] = 0
+            if "purchased_drive_slots" in self.settings:
+                self.settings["purchased_drive_slots"] = 0
+            # 重置默认有效期为1小时（切换账号后不继承上一个账号的设置）
+            self.settings["default_duration_hours"] = 1
+            save_settings(self.settings)
             save_data(self.data)
             self.page.run_thread(self.show_fullscreen_login)
         threading.Thread(target=do_logout, daemon=True).start()
@@ -6111,7 +11767,7 @@ def _pre_set_window_icon():
         if not _os.path.exists(ico_path):
             return
         user32 = ctypes.windll.user32
-        win_title = APP_CONFIG.get("app_name", "YoXi邮箱")
+        win_title = APP_CONFIG.get("app_name", "YoXi网盘")
         # 高频轮询：每50ms查一次，最多等10秒
         for _ in range(200):
             hwnd = user32.FindWindowW(None, win_title)
