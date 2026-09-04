@@ -1,6 +1,6 @@
 {
   "app_name": "YoXi网盘",
-  "app_version": "1.0.0",
+  "app_version": "1.1.0",
   "remote_api_base": "https://o1415520.pythonanywhere.com",
   "remote_app_key": "85e27f37695041bc83f9e8cc1b322567ac336c22bc004513",
   "email_lifetime_seconds": 3600,
@@ -16,11 +16,29 @@
   "emailjs_public_key": "t5u_Xr0_qw1IHjuSq",
   "enable_phone_tab": true,
   "phone_numbers": [
-    {"country": "美国", "number": "+1 787-395-8339"},
-    {"country": "英国", "number": "+44 7862-012-345"},
-    {"country": "加拿大", "number": "+1 438-800-2345"},
-    {"country": "法国", "number": "+33 6 12 34 56 78"},
-    {"country": "德国", "number": "+49 151 23456789"},
-    {"country": "日本", "number": "+81 70-1234-5678"}
+    {
+      "country": "美国",
+      "number": "+1 787-395-8339"
+    },
+    {
+      "country": "英国",
+      "number": "+44 7862-012-345"
+    },
+    {
+      "country": "加拿大",
+      "number": "+1 438-800-2345"
+    },
+    {
+      "country": "法国",
+      "number": "+33 6 12 34 56 78"
+    },
+    {
+      "country": "德国",
+      "number": "+49 151 23456789"
+    },
+    {
+      "country": "日本",
+      "number": "+81 70-1234-5678"
+    }
   ]
 }

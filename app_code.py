@@ -53,7 +53,7 @@ except:
 
 DEFAULT_CONFIG = {
     "app_name": "YoXi网盘",
-    "app_version": "1.0.0",
+    "app_version": "1.1.0",
     "theme_color": "#007AFF",
     "window_width": 375,
     "window_height": 812,
@@ -65,7 +65,7 @@ DEFAULT_CONFIG = {
     "remote_api_base": "https://o1415520.pythonanywhere.com",
     "remote_app_key": "85e27f37695041bc83f9e8cc1b322567ac336c22bc004513",
     "update_url": "https://wwawd.lanzouw.com/b01euptxsh",
-    "default_app_icon": "assets/cute_email_icon.png",
+    "default_app_icon": "assets/default_icon.png",
     "smtp_host": "smtp.qq.com",
     "smtp_port": 465,
     "smtp_user": "",
@@ -542,6 +542,14 @@ class TempMailApp:
         self._cloud_files_loading = False
         self.current_folder_id = 0  # 当前所在文件夹ID，0表示根目录
         self.folder_path = []  # 文件夹路径栈，用于返回上级
+        # 昵称颜色配置（运行时初始化，ft.colors在类定义时不可用）
+        self.NAME_COLORS = {
+            "purple": {"name": "紫色名字", "color": ft.colors.PURPLE, "points": 50, "icon": ft.icons.PALETTE},
+            "red": {"name": "红色名字", "color": ft.colors.RED, "points": 50, "icon": ft.icons.FAVORITE},
+            "green": {"name": "绿色名字", "color": ft.colors.GREEN, "points": 50, "icon": ft.icons.ECO},
+            "rainbow": {"name": "彩色名字", "color": "rainbow", "points": 200, "icon": ft.icons.AUTO_AWESOME},
+        }
+        self.RAINBOW_COLORS = [ft.colors.RED, ft.colors.ORANGE, ft.colors.YELLOW, ft.colors.GREEN, ft.colors.BLUE, ft.colors.PURPLE]
 
     def format_user_id(self, raw_id):
         """格式化用户ID：原始ID=1显示为930001，以此类推"""
@@ -558,6 +566,8 @@ class TempMailApp:
             self.page.window_height = APP_CONFIG.get("window_height", 812)
         except Exception as e:
             print(f"[窗口尺寸] 设置失败: {e}")
+        # 安卓返回键处理：子页面返回上一页，主页面退出应用
+        self.page.on_view_pop = self._on_view_pop
         # 设置窗口标题栏和任务栏图标（Windows API方式，确保任务栏也生效）
         try:
             ico_path = os.path.join(_base_dir, "assets", "app_icon.ico")
@@ -934,7 +944,7 @@ class TempMailApp:
                 if isinstance(result, dict):
                     msg = str(result.get("msg", "")).lower()
                     # 如果错误信息包含"用户不存在"、"not found"、"不存在"等，就清除登录状态
-                    if "用户不存在" in msg or "not found" in msg or "不存在" in msg or "user" in msg and "not" in msg:
+                    if "用户不存在" in msg or "user not found" in msg or "not found" in msg and "user" in msg:
                         self._clear_local_login()
                         return
                 # 网络错误不清除登录状态
@@ -1038,7 +1048,7 @@ class TempMailApp:
                     for k, v in params.items():
                         if k not in request_body:
                             request_body[k] = v
-            data = json.dumps(request_body).encode("utf-8") if request_body else None
+            data = json.dumps(request_body).encode("utf-8") if request_body is not None else None
             req = urllib.request.Request(url, data=data, headers=headers, method=method)
             with urllib.request.urlopen(req, timeout=15) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
@@ -1425,7 +1435,7 @@ class TempMailApp:
             self._show_error_page("启动失败", str(e))
 
     def _show_announcement(self, title, content):
-        """显示公告弹窗（新UI：复选框+底部按钮）"""
+        """显示公告弹窗（新UI：自定义复选框+底部按钮）"""
         try:
             # QQ群号
             qq_group_number = "1093927643"
@@ -1443,12 +1453,41 @@ class TempMailApp:
                             self._copy_text(qq_group_number, "QQ群号已复制，请手动添加")
                 self._close_dialog()
 
-            # "今日不再提醒"复选框
-            dismiss_check = ft.Checkbox(label="今日不再提醒", value=False,
-                fill_color=THEME_COLOR, check_color=ft.colors.WHITE)
+            # 自定义复选框状态
+            dismiss_checked = {"value": False}
+            check_icon = ft.Icon(ft.icons.CHECK, size=14, color=ft.colors.WHITE, visible=False)
+            check_box = ft.Container(
+                content=check_icon,
+                width=18, height=18,
+                bgcolor=ft.colors.TRANSPARENT,
+                border=ft.border.all(1.5, ft.colors.GREY_400),
+                border_radius=4,
+                alignment=ft.alignment.center,
+            )
+            
+            def toggle_check(e):
+                dismiss_checked["value"] = not dismiss_checked["value"]
+                if dismiss_checked["value"]:
+                    check_box.bgcolor = THEME_COLOR
+                    check_box.border = ft.border.all(1.5, THEME_COLOR)
+                    check_icon.visible = True
+                else:
+                    check_box.bgcolor = ft.colors.TRANSPARENT
+                    check_box.border = ft.border.all(1.5, ft.colors.GREY_400)
+                    check_icon.visible = False
+                self.page.update()
+            
+            dismiss_row = ft.GestureDetector(
+                content=ft.Row([
+                    check_box,
+                    ft.Container(width=8),
+                    ft.Text("今日不再提醒", size=13, color=ft.colors.GREY_700),
+                ], spacing=0, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                on_tap=toggle_check,
+            )
 
             def on_confirm(e):
-                if dismiss_check.value:
+                if dismiss_checked["value"]:
                     self.settings["announcement_dismiss_date"] = time.strftime("%Y-%m-%d")
                     save_settings(self.settings)
                 self._close_dialog()
@@ -1467,11 +1506,11 @@ class TempMailApp:
                     content=ft.Column([
                         ft.Text(content, size=14, color=ft.colors.GREY_700,
                             selectable=True),
-                        ft.Container(height=12),
-                        dismiss_check,
+                        ft.Container(height=20),
+                        dismiss_row,
                     ], spacing=0, tight=True),
                     width=300,
-                    padding=ft.padding.only(0, 5, 0, 0),
+                    padding=ft.padding.only(0, 8, 0, 0),
                 ),
                 actions=[
                     ft.TextButton("加入QQ群", on_click=join_qq_group,
@@ -3765,7 +3804,7 @@ class TempMailApp:
         self.page.floating_action_button = None
         self.content.controls.append(ft.Container(
             content=ft.Row([
-                ft.Text("邮箱频道", size=28, weight=ft.FontWeight.BOLD, expand=True, color=self.clr_text),
+                ft.Text("频道", size=28, weight=ft.FontWeight.BOLD, expand=True, color=self.clr_text),
             ]),
             padding=ft.padding.only(20, 50, 20, 10),
         ))
@@ -3775,12 +3814,58 @@ class TempMailApp:
         ))
 
         # 管理员/超级管理员专属：管理卡片（在线人数、用户管理、黑名单）
+        # ---- 第一行卡片（所有人可见）：公告、暂存、暂存 ----
+        announce_card = ft.Container(
+            content=ft.Column([
+                ft.Container(
+                    content=ft.Icon(ft.icons.CAMPAIGN, size=24, color=ft.colors.ORANGE),
+                    width=44, height=44, bgcolor=ft.colors.ORANGE_50,
+                    border_radius=22, alignment=ft.alignment.center,
+                ),
+                ft.Container(height=8),
+                ft.Text("公告", size=12, color=self.clr_text2),
+                ft.Text("公告", size=20, weight=ft.FontWeight.BOLD, color=self.clr_text),
+            ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=0),
+            expand=True, bgcolor=self.clr_card, border_radius=12, padding=14,
+            on_click=lambda e: self._show_remote_announcement(),
+        )
+        placeholder1_card = ft.Container(
+            content=ft.Column([
+                ft.Container(
+                    content=ft.Icon(ft.icons.MORE_HORIZ, size=24, color=ft.colors.GREY_500),
+                    width=44, height=44, bgcolor=ft.colors.GREY_100,
+                    border_radius=22, alignment=ft.alignment.center,
+                ),
+                ft.Container(height=8),
+                ft.Text("敬请期待", size=12, color=self.clr_text2),
+                ft.Text("暂存", size=20, weight=ft.FontWeight.BOLD, color=self.clr_text),
+            ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=0),
+            expand=True, bgcolor=self.clr_card, border_radius=12, padding=14,
+        )
+        placeholder2_card = ft.Container(
+            content=ft.Column([
+                ft.Container(
+                    content=ft.Icon(ft.icons.MORE_HORIZ, size=24, color=ft.colors.GREY_500),
+                    width=44, height=44, bgcolor=ft.colors.GREY_100,
+                    border_radius=22, alignment=ft.alignment.center,
+                ),
+                ft.Container(height=8),
+                ft.Text("敬请期待", size=12, color=self.clr_text2),
+                ft.Text("暂存", size=20, weight=ft.FontWeight.BOLD, color=self.clr_text),
+            ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=0),
+            expand=True, bgcolor=self.clr_card, border_radius=12, padding=14,
+        )
+        self.content.controls.append(ft.Container(
+            content=ft.Row([announce_card, placeholder1_card, placeholder2_card], spacing=10),
+            padding=ft.padding.symmetric(horizontal=16),
+        ))
+        self.content.controls.append(ft.Container(height=10))
+
+        # ---- 第二行卡片（仅管理员可见）：在线人数、用户管理、黑名单 ----
         if self.current_user:
             user_role = str(self.current_user.get("role", ""))
             is_admin = user_role in ["超级管理员", "管理员", "admin", "Admin", "超级管理", "频道主"]
             if is_admin:
-                # 在线人数卡片
-                # 在线人数：只加载一次，用缓存的值
                 _cached_online = getattr(self, '_cached_online_count', None)
                 self._online_count_text = ft.Text(str(_cached_online) if _cached_online is not None else "--", size=20, weight=ft.FontWeight.BOLD, color=self.clr_text)
                 online_card = ft.Container(
@@ -3795,9 +3880,7 @@ class TempMailApp:
                         self._online_count_text,
                     ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=0),
                     expand=True, bgcolor=self.clr_card, border_radius=12, padding=14,
-                    
                 )
-                # 用户管理卡片
                 user_mgmt_card = ft.Container(
                     content=ft.Column([
                         ft.Container(
@@ -3812,7 +3895,6 @@ class TempMailApp:
                     expand=True, bgcolor=self.clr_card, border_radius=12, padding=14,
                     on_click=lambda e: self.show_user_management(),
                 )
-                # 黑名单卡片
                 blacklist_card = ft.Container(
                     content=ft.Column([
                         ft.Container(
@@ -3832,9 +3914,19 @@ class TempMailApp:
                     padding=ft.padding.symmetric(horizontal=16),
                 ))
                 self.content.controls.append(ft.Container(height=10))
-                # 异步获取在线人数（只在没有缓存时加载一次）
+                # 异步获取在线人数
                 if getattr(self, "_cached_online_count", None) is None:
                     threading.Thread(target=self._fetch_online_count, daemon=True).start()
+
+        # ---- 频道列表（所有人可见） ----
+        self.content.controls.append(ft.Container(
+            content=ft.Row([
+                ft.Container(width=3, height=12, bgcolor=THEME_COLOR, border_radius=2),
+                ft.Container(width=6),
+                ft.Text("频道列表", size=13, color=self.clr_text2, weight=ft.FontWeight.W_600),
+            ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.padding.only(20, 8, 20, 6),
+        ))
 
         self._channel_list = ft.ListView([], spacing=0, expand=True, padding=16)
         self.content.controls.append(self._channel_list)
@@ -3842,25 +3934,54 @@ class TempMailApp:
         # 加载频道列表（API待对接）
         self._load_channels()
 
+
+    def _show_remote_announcement(self):
+        """从网站获取并显示远程公告"""
+        def fetch_and_show():
+            try:
+                # 从远程配置获取公告
+                notice = None
+                if hasattr(self, '_remote_config') and self._remote_config:
+                    notice = self._remote_config.get("notice")
+                # 如果缓存没有，重新获取配置
+                if not notice:
+                    ok, result = self._remote_api_request("GET", "config")
+                    if ok and isinstance(result, dict) and result.get("ok"):
+                        data = result.get("data", {})
+                        notice = data.get("notice")
+                        self._remote_config = data
+                if notice and isinstance(notice, dict):
+                    title = notice.get("title", "公告")
+                    body = notice.get("content", "")
+                    if body:
+                        self.page.run_thread(lambda: self._show_announcement(title, body))
+                        return
+                self.page.run_thread(lambda: self._show_toast("暂无公告", "info"))
+            except Exception as e:
+                self.page.run_thread(lambda: self._show_toast("获取公告失败", "error"))
+        threading.Thread(target=fetch_and_show, daemon=True).start()
+
     def _fetch_online_count(self):
-        """获取在线人数（异步）"""
+        """获取用户总数（异步，用users/count接口，管理员权限）"""
         try:
-            # 这里以后对接获取在线人数的API，现在先显示注册用户数
-            ok, result = self._remote_api_request("GET", "register-count")
+            operator_id = self.current_user.get("id", "") if self.current_user else ""
+            ok, result = self._remote_api_request("GET", "users/count",
+                params={"operator_id": operator_id})
+            count = 0
             if ok and isinstance(result, dict) and result.get("ok"):
                 data = result.get("data", {})
                 if isinstance(data, dict):
-                    count = data.get("register_count", 0)
-                    # 更新在线人数显示（这里暂时用注册数代替，以后对接真实在线人数）
-                    def update_count():
-                        try:
-                            if hasattr(self, '_online_count_text') and self._online_count_text:
-                                self._online_count_text.value = str(count)
-                                self._cached_online_count = count
-                                self.page.update()
-                        except:
-                            pass
-                    self.page.run_thread(update_count)
+                    count = data.get("total", 0)
+            # 更新显示
+            def update_count():
+                try:
+                    if hasattr(self, '_online_count_text') and self._online_count_text:
+                        self._online_count_text.value = str(count)
+                        self._cached_online_count = count
+                        self.page.update()
+                except:
+                    pass
+            self.page.run_thread(update_count)
         except:
             pass
 
@@ -3868,7 +3989,7 @@ class TempMailApp:
         """加载频道列表"""
         # 只留一个邮箱交流群，频道列表页面显示512个成员
         channels = [
-            {"id": "1", "name": "邮箱交流群", "desc": "临时邮箱使用交流", "icon": "📧", "members": 512},
+            {"id": "1", "name": "高级会议", "desc": "高级会员专属交流频道", "icon": "🎯", "members": 0},
         ]
         self._render_channels(channels)
 
@@ -3994,26 +4115,23 @@ class TempMailApp:
             operator_id = self.current_user.get("id", "")
             # 获取用户总数（用于显示已封禁数量）
             count_ok, count_result = self._remote_api_request("GET", "users/count",
-                body={"operator_id": operator_id}, get_with_body=True)
+                params={"operator_id": operator_id})
             banned = 0
+            blacklist_error = ""
             if count_ok and isinstance(count_result, dict) and count_result.get("ok"):
                 data = count_result.get("data", {})
                 banned = data.get("banned", 0)
+            elif isinstance(count_result, dict):
+                blacklist_error = count_result.get("msg", "获取失败")
 
-            # 获取所有用户列表（API的status参数可能不生效，所以在应用端筛选）
+            # 获取已封禁用户列表（用status=banned筛选）
             list_ok, list_result = self._remote_api_request("GET", "users",
-                body={"page": 1, "page_size": 100, "status": "all", "operator_id": operator_id},
-                get_with_body=True)
+                params={"operator_id": operator_id, "page": 1, "page_size": 100, "status": "banned"})
 
             users = []
             if list_ok and isinstance(list_result, dict) and list_result.get("ok"):
                 data = list_result.get("data", {})
-                all_users = data.get("users", [])
-                # 在应用端筛选出status为banned的用户（API的status参数可能不生效）
-                for user in all_users:
-                    user_status = str(user.get("status", "")).lower()
-                    if user_status in ["banned", "disabled", "blocked"]:
-                        users.append(user)
+                users = data.get("users", [])
 
             # 更新UI
             def update_ui():
@@ -4084,28 +4202,11 @@ class TempMailApp:
                 on_click=lambda e, uid=user_id, uname=username:
                     self._toggle_ban_user(uid, uname, True))
 
-            delete_btn = ft.Container()
-            if is_super_admin:
-                delete_btn = ft.TextButton("删除",
-                    style=ft.ButtonStyle(color=ft.colors.RED),
-                    on_click=lambda e, uid=user_id, uname=username:
-                        self._delete_user(uid, uname))
-
-            # 本人标签（在卡片外定义）
-            _self_badge = ft.Container()
-            if is_self:
-                _self_badge = ft.Container(content=ft.Text("本人", size=9, color=ft.colors.WHITE),
-                    bgcolor=ft.colors.BLUE, border_radius=4,
-                    padding=ft.padding.symmetric(horizontal=5, vertical=1),
-                    alignment=ft.alignment.center)
-
             # 用户卡片（半透明，表示已封禁）
             user_card = ft.Container(
                 content=ft.Column([
-                    # 第一行：本人标签 + 用户名 + 角色 + 状态
+                    # 第一行：用户名 + 角色 + 状态
                     ft.Row([
-                        _self_badge,
-                        ft.Container(width=4) if is_self else ft.Container(),
                         ft.Text(name or username, size=15, weight=ft.FontWeight.BOLD, color=self.clr_text, expand=True),
                         role_badge,
                         ft.Container(width=4),
@@ -4123,7 +4224,7 @@ class TempMailApp:
                     ft.Text(f"最近登录: {last_login}", size=11, color=self.clr_text2),
                     ft.Container(height=8),
                     # 第三行：操作按钮
-                    ft.Row([unban_btn, delete_btn], spacing=4, alignment=ft.MainAxisAlignment.END),
+                    ft.Row([unban_btn], spacing=4, alignment=ft.MainAxisAlignment.END),
                 ], spacing=0),
                 bgcolor=self.clr_card, border_radius=12, padding=14,
                 opacity=0.7,
@@ -4137,30 +4238,54 @@ class TempMailApp:
             operator_id = self.current_user.get("id", "")
             # 获取用户总数
             count_ok, count_result = self._remote_api_request("GET", "users/count",
-                body={"operator_id": operator_id}, get_with_body=True)
+                params={"operator_id": operator_id})
             total = active = banned = 0
+            count_error = ""
             if count_ok and isinstance(count_result, dict) and count_result.get("ok"):
                 data = count_result.get("data", {})
                 total = data.get("total", 0)
                 active = data.get("active", 0)
                 banned = data.get("banned", 0)
+            elif isinstance(count_result, dict):
+                count_error = count_result.get("msg", "获取用户数失败")
 
             # 获取用户列表
             list_ok, list_result = self._remote_api_request("GET", "users",
-                body={"page": 1, "page_size": 100, "status": "all", "operator_id": operator_id},
-                get_with_body=True)
+                params={"operator_id": operator_id, "page": 1, "page_size": 100, "status": "all"})
 
             users = []
+            list_error = ""
             if list_ok and isinstance(list_result, dict) and list_result.get("ok"):
                 data = list_result.get("data", {})
                 users = data.get("users", [])
+            elif isinstance(list_result, dict):
+                list_error = list_result.get("msg", "获取用户列表失败")
 
             # 更新UI
             def update_ui():
                 # 更新统计信息
-                self._user_stats_text.value = f"共 {total} 个用户 | 正常 {active} | 已封禁 {banned}"
+                if count_error:
+                    self._user_stats_text.value = f"加载失败: {count_error}"
+                else:
+                    self._user_stats_text.value = f"共 {total} 个用户 | 正常 {active} | 已封禁 {banned}"
                 # 渲染用户列表
                 self._render_user_list(users)
+                # 如果有错误且用户列表为空，显示错误提示
+                if list_error and not users:
+                    self._user_list_container.controls.clear()
+                    self._user_list_container.controls.append(ft.Container(
+                        content=ft.Column([
+                            ft.Icon(ft.icons.ERROR_OUTLINE, size=48, color=ft.colors.RED_300),
+                            ft.Container(height=12),
+                            ft.Text("加载失败", size=16, weight=ft.FontWeight.W_600, color=self.clr_text),
+                            ft.Container(height=4),
+                            ft.Text(list_error, size=13, color=self.clr_text2, text_align=ft.TextAlign.CENTER),
+                            ft.Container(height=8),
+                            ft.Text("请确认当前账号在网站后台有管理员权限", size=11, color=ft.colors.GREY_500),
+                        ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=0),
+                        alignment=ft.alignment.center,
+                        padding=ft.padding.only(0, 60, 0, 0),
+                    ))
                 self.page.update()
 
             self.page.run_thread(update_ui)
@@ -4250,11 +4375,6 @@ class TempMailApp:
                     padding=ft.padding.symmetric(horizontal=8, vertical=4))
 
             delete_btn = ft.Container()
-            if is_super_admin and can_manage:
-                delete_btn = ft.TextButton("删除",
-                    style=ft.ButtonStyle(color=ft.colors.RED),
-                    on_click=lambda e, uid=user_id, uname=username:
-                        self._delete_user(uid, uname))
 
             # 本人标签（在卡片外定义）
             _self_badge = ft.Container()
@@ -4316,38 +4436,6 @@ class TempMailApp:
                 self.page.run_thread(lambda: self._show_toast(f"{action}失败: {str(e)[:30]}"))
         threading.Thread(target=do_action, daemon=True).start()
 
-    def _delete_user(self, user_id, username):
-        """删除用户（仅超级管理员）"""
-        def confirm_delete():
-            def do_delete():
-                try:
-                    operator_id = self.current_user.get("id", "")
-                    ok, result = self._remote_api_request("DELETE", f"users/{user_id}",
-                        body={"operator_id": operator_id})
-                    if ok and isinstance(result, dict) and result.get("ok"):
-                        self.page.run_thread(lambda: self._show_toast("删除成功"))
-                        self.page.run_thread(self._load_user_list)
-                    else:
-                        msg = ""
-                        if isinstance(result, dict):
-                            msg = result.get("msg", "")
-                        self.page.run_thread(lambda: self._show_toast(f"删除失败: {msg or '未知错误'}"))
-                except Exception as e:
-                    self.page.run_thread(lambda: self._show_toast(f"删除失败: {str(e)[:30]}"))
-            threading.Thread(target=do_delete, daemon=True).start()
-
-        # 确认删除对话框
-        self.page.dialog = ft.AlertDialog(
-            title=ft.Text("确认删除"),
-            content=ft.Text(f"确定要删除用户「{username}」吗？\n删除后该用户的所有数据（邮箱、聊天记录等）将被清除，不可恢复！"),
-            actions=[
-                ft.TextButton("取消", on_click=lambda e: self._close_dialog()),
-                ft.TextButton("确认删除", style=ft.ButtonStyle(color=ft.colors.RED),
-                    on_click=lambda e: [self._close_dialog(), confirm_delete()]),
-            ],
-        )
-        self.page.dialog.open = True
-        self.page.update()
 
     def _close_dialog(self):
         """关闭对话框"""
@@ -4386,11 +4474,9 @@ class TempMailApp:
             role_field = None
             duration_perm_container = ft.Container()
         else:
-            # 编辑其他用户：只能改昵称、角色、有效期权限
+            # 编辑其他用户：可以改昵称、邮箱、QQ号、角色
             name_field = ft.TextField(label="昵称", value=name, width=300, border_radius=8)
             username_field = None
-            email_field = None
-            qq_field = None
 
         # 角色下拉框：只有编辑其他用户时才显示（编辑自己不显示）
         if not is_self:
@@ -4420,43 +4506,10 @@ class TempMailApp:
         else:
             role_field = None
 
-        # 有效期权限：只有编辑其他用户时才显示（编辑自己不显示）
+        # 编辑其他用户时显示邮箱和QQ号输入框
         if not is_self:
-            can_use_2h = user.get("can_use_2h", False)
-            can_use_permanent = user.get("can_use_permanent", False)
-            if isinstance(can_use_2h, str):
-                can_use_2h = can_use_2h.lower() in ["true", "1", "yes"]
-            if isinstance(can_use_permanent, str):
-                can_use_permanent = can_use_permanent.lower() in ["true", "1", "yes"]
-
-            duration_perm_label = ft.Container(
-                content=ft.Text("临时邮箱有效期权限", size=13, weight=ft.FontWeight.BOLD, color=ft.colors.GREY_700),
-                padding=ft.padding.only(0, 8, 0, 4),
-            )
-
-            can_2h_switch = ft.Switch(
-                label="2小时有效期",
-                value=bool(can_use_2h),
-                active_color=THEME_COLOR,
-            )
-            can_permanent_switch = ft.Switch(
-                label="永久有效期",
-                value=bool(can_use_permanent),
-                active_color=THEME_COLOR,
-            )
-
-            duration_perm_container = ft.Container(
-                content=ft.Column([
-                    duration_perm_label,
-                    can_2h_switch,
-                    can_permanent_switch,
-                ], spacing=4, tight=True),
-                padding=ft.padding.only(0, 4, 0, 4),
-            )
-        else:
-            duration_perm_container = ft.Container()
-            can_2h_switch = None
-            can_permanent_switch = None
+            email_field = ft.TextField(label="邮箱", value=email, width=300, border_radius=8)
+            qq_field = ft.TextField(label="QQ号", value=qq, width=300, border_radius=8)
 
         def do_save(e):
             self._close_dialog()
@@ -4475,11 +4528,11 @@ class TempMailApp:
                         if qq_field:
                             body["qq"] = qq_field.value
                     else:
-                        # 编辑其他用户：可以改有效期权限和角色
-                        if can_2h_switch:
-                            body["can_use_2h"] = can_2h_switch.value
-                        if can_permanent_switch:
-                            body["can_use_permanent"] = can_permanent_switch.value
+                        # 编辑其他用户：可以改邮箱、QQ号、角色
+                        if email_field:
+                            body["email"] = email_field.value
+                        if qq_field:
+                            body["qq"] = qq_field.value
                         if isinstance(role_field, ft.Dropdown):
                             body["role"] = role_field.value
                     ok, result = self._remote_api_request("PUT", f"users/{user_id}", body=body)
@@ -4499,7 +4552,7 @@ class TempMailApp:
             title=ft.Text(f"编辑{'自己' if is_self else '用户'} - {name or username}"),
             content=ft.Column(
                 ([name_field, email_field, qq_field] if is_self else
-                 ([name_field] + ([role_field] if isinstance(role_field, ft.Dropdown) else []) + [duration_perm_container])),
+                 [name_field, email_field, qq_field] + ([role_field] if isinstance(role_field, ft.Dropdown) else [])),
                 tight=True, spacing=10),
             actions=[
                 ft.TextButton("取消", on_click=lambda e: self._close_dialog()),
@@ -4562,9 +4615,9 @@ class TempMailApp:
         if not self.current_channel:
             return
         channel = self.current_channel
-        channel_name = channel.get("name", "邮箱交流群")
+        channel_name = channel.get("name", "高级会议")
         channel_id = channel.get("id", "1")
-        channel_icon = channel.get("icon", "📧")
+        channel_icon = channel.get("icon", "🎯")
         # 我的群昵称（优先用本地设置的群昵称，否则用用户昵称）
         my_nickname = getattr(self, '_channel_nickname', "")
         if not my_nickname:
@@ -4706,7 +4759,7 @@ class TempMailApp:
         self._hide_navbar()  # 进入聊天页面隐藏导航栏
         self.content.controls.clear()
         self.content.scroll = None  # 关闭整体滚动，确保布局稳定
-        # 成员数量文本（后续从网站API获取实际数量后更新）
+        # 成员数量文本（从API获取实际数量）
         self._channel_members_text = ft.Text("加载中... 成员", size=12, color=self.clr_text2)
         # 底部输入框（现代风格：胶囊形状+填充背景）
         self._chat_input = ft.TextField(
@@ -4781,24 +4834,37 @@ class TempMailApp:
             ),
         ], spacing=0, expand=True))
         self.page.update()
-        # 从网站API获取实际的注册数量（成员数量）
+        # 成员数量：用 users/count API 获取真实用户总数，消息统计作为兜底
         def load_members_count():
             try:
-                # 调用 register-count 接口获取注册数量
-                ok, result = self._remote_api_request("GET", "register-count")
-                user_count = 0
-                if ok and isinstance(result, dict) and result.get("ok"):
-                    data = result.get("data", {})
-                    if isinstance(data, dict):
-                        user_count = data.get("register_count", 0)
-                # 更新成员数量显示
+                api_count = 0
+                # 用当前用户ID作为operator_id调用 users/count（管理员可获取全部用户数）
+                if self.current_user:
+                    operator_id = self.current_user.get("id", "")
+                    if operator_id:
+                        ok, result = self._remote_api_request(
+                            "GET", f"users/count?operator_id={operator_id}", body={}, get_with_body=False
+                        )
+                        if ok and isinstance(result, dict) and result.get("ok"):
+                            data = result.get("data", {})
+                            if isinstance(data, dict):
+                                api_count = data.get("total", 0)
+                # 如果API没拿到（非管理员），从消息统计
+                if api_count <= 0:
+                    self._update_channel_member_count()
+                    return
+                # 更新显示
                 def update_text():
                     if hasattr(self, '_channel_members_text') and self._channel_members_text:
-                        self._channel_members_text.value = f"{user_count} 成员"
+                        self._channel_members_text.value = f"{api_count} 成员"
                         self.page.update()
                 self.page.run_thread(update_text)
-            except Exception as e:
-                pass
+            except Exception:
+                # 出错时从消息统计兜底
+                try:
+                    self._update_channel_member_count()
+                except Exception:
+                    pass
         threading.Thread(target=load_members_count, daemon=True).start()
         # 消息加载逻辑：有缓存直接显示+后台增量加载；没缓存后台加载全部（加载中已显示）
         if hasattr(self, '_cached_channel_messages') and self._cached_channel_messages:
@@ -4941,7 +5007,36 @@ class TempMailApp:
             self._cached_channel_messages.extend(formatted_new)
             self._cached_user_roles = user_roles
             self._render_chat_messages(self._cached_channel_messages)
+            self._update_channel_member_count()
         except Exception as e:
+            pass
+
+    def _update_channel_member_count(self):
+        """从聊天消息中统计唯一用户数，更新左上角成员显示"""
+        try:
+            messages = getattr(self, '_cached_channel_messages', [])
+            if not messages:
+                return
+            unique_users = set()
+            for msg in messages:
+                if msg.get("is_system"):
+                    continue
+                username = msg.get("user", "")
+                if username and username != "系统":
+                    unique_users.add(username)
+            # 加上当前用户（如果还没发过言）
+            if self.current_user:
+                my_name = self.current_user.get("name", self.current_user.get("username", ""))
+                if my_name:
+                    unique_users.add(my_name)
+            count = len(unique_users)
+            # 至少显示1（当前用户）
+            if count < 1:
+                count = 1
+            if hasattr(self, '_channel_members_text') and self._channel_members_text:
+                self._channel_members_text.value = f"{count} 成员"
+                self.page.update()
+        except Exception:
             pass
 
     def _load_channel_messages(self):
@@ -5011,6 +5106,8 @@ class TempMailApp:
                     # 缓存消息
                     self._cached_channel_messages = formatted_messages
                     self.page.run_thread(lambda: self._render_chat_messages(formatted_messages))
+                    # 从消息统计成员数
+                    self.page.run_thread(self._update_channel_member_count)
                 else:
                     # 没有消息，显示空状态
                     self._cached_channel_messages = []
@@ -5061,10 +5158,11 @@ class TempMailApp:
                             role_color = ft.colors.BLUE
                         else:
                             role_color = ft.colors.RED
-                    # 名字和角色行（在气泡外面）
+                    # 名字和角色行（在气泡外面，昵称带颜色）
+                    my_name_widget = self._get_colored_name_widget(username, size=11)
                     name_row = ft.Row([
                         ft.Container(width=40),
-                        ft.Text(username, size=11, color=self.clr_text2),
+                        my_name_widget,
                         ft.Container(width=4),
                         ft.Container(content=ft.Text(role, size=9, color=ft.colors.WHITE),
                             bgcolor=role_color, border_radius=4, padding=ft.padding.symmetric(1, 4),
@@ -5616,6 +5714,22 @@ class TempMailApp:
         self.page.floating_action_button = None
         self.page.update()
 
+    def _on_view_pop(self, e):
+        """安卓返回键处理：子页面返回上一页，主页面退出应用"""
+        try:
+            # 如果在功能子页面，返回功能页
+            if getattr(self, '_show_back_to_features', False):
+                self._back_to_features()
+                return
+            # 如果在网盘子目录，返回上一级
+            if hasattr(self, 'current_folder_id') and self.current_folder_id and self.current_folder_id > 0:
+                if hasattr(self, '_go_back_folder'):
+                    self._go_back_folder()
+                    return
+            # 其他情况让默认行为处理（退出应用）
+        except Exception as ex:
+            print(f"[返回键] 处理失败: {ex}")
+
     def _back_to_features(self, e=None):
         """从子页面返回功能页"""
         self._close_embedded_webview()
@@ -5748,8 +5862,9 @@ class TempMailApp:
             self._show_toast("无法刷新", "warning")
 
     def _feature_page_header(self, title, on_back=None):
-        """功能子页面通用顶部栏"""
+        """功能子页面通用顶部栏（标题固定，内容区单独滚动）"""
         back_action = on_back if on_back else self._back_to_features
+        self.content.scroll = None  # 顶部标题固定，不跟随滚动
         self.content.controls.append(ft.Container(
             content=ft.Row([
                 ft.IconButton(ft.icons.ARROW_BACK, icon_size=22, on_click=back_action),
@@ -5758,12 +5873,14 @@ class TempMailApp:
             padding=ft.padding.only(8, 45, 12, 8), bgcolor=self.clr_bg,
         ))
         self.content.controls.append(ft.Container(height=1, bgcolor=self.clr_border))
+        # 创建可滚动的内容区，后续内容都添加到这里
+        self._feature_content = ft.Column([], spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
+        self.content.controls.append(self._feature_content)
 
     def _show_qrcode_generator(self):
         """二维码生成器页面（输入框+生成按钮一行，下方方框展示，可保存）"""
         self._hide_navbar()
         self.content.controls.clear()
-        self.content.scroll = ft.ScrollMode.AUTO
         self._feature_page_header("二维码生成")
         qr_input = ft.TextField(
             label="输入文字或链接", multiline=False, height=48, expand=True,
@@ -5820,7 +5937,7 @@ class TempMailApp:
             width=64, height=48, bgcolor=ft.colors.GREEN, border_radius=10,
             alignment=ft.alignment.center, on_click=do_generate, ink=True,
         )
-        self.content.controls.append(ft.Container(
+        self._feature_content.controls.append(ft.Container(
             content=ft.Column([
                 ft.Container(height=12),
                 ft.Row([qr_input, gen_btn], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
@@ -5912,7 +6029,6 @@ class TempMailApp:
         """视频去水印（自动提取分享链接+多API轮询）"""
         self._hide_navbar()
         self.content.controls.clear()
-        self.content.scroll = ft.ScrollMode.AUTO
         self._feature_page_header("视频去水印")
         _input_style = {
             "bgcolor": ft.colors.with_opacity(0.75, ft.colors.WHITE),
@@ -6110,7 +6226,7 @@ class TempMailApp:
             bgcolor=self.clr_card, border_radius=14, padding=14,
             visible=False,
         )
-        self.content.controls.append(ft.Container(
+        self._feature_content.controls.append(ft.Container(
             content=ft.Column([
                 ft.Container(height=12),
                 ft.Row([video_input, parse_btn], spacing=8, vertical_alignment=ft.CrossAxisAlignment.START),
@@ -6160,7 +6276,7 @@ class TempMailApp:
         ops_row5 = ft.Row([calc_btn("0", expand=2), calc_btn("."),
             calc_btn("=", bgcolor=THEME_COLOR, color=ft.colors.WHITE)], spacing=8)
 
-        self.content.controls.append(ft.Container(
+        self._feature_content.controls.append(ft.Container(
             content=ft.Column([
                 ft.Container(height=16),
                 ft.Container(content=calc_display, bgcolor=self.clr_card, border_radius=12,
@@ -6212,7 +6328,6 @@ class TempMailApp:
         """图片去水印（画笔涂抹模式：GestureDetector检测涂抹，动态圆点显示）"""
         self._hide_navbar()
         self.content.controls.clear()
-        self.content.scroll = ft.ScrollMode.AUTO
         self._feature_page_header("图片去水印")
 
         DISPLAY_W = 300
@@ -6375,7 +6490,7 @@ class TempMailApp:
                 expand=True, height=44, bgcolor=color, border_radius=10,
                 alignment=ft.alignment.center, on_click=on_click, ink=True)
 
-        self.content.controls.append(ft.Container(
+        self._feature_content.controls.append(ft.Container(
             content=ft.Column([
                 ft.Container(height=12),
                 ft.Container(content=ft.Row([
@@ -6526,7 +6641,7 @@ class TempMailApp:
             ], spacing=0),
             bgcolor=self.clr_card, border_radius=12, padding=14, visible=False,
         )
-        self.content.controls.append(ft.Container(
+        self._feature_content.controls.append(ft.Container(
             content=ft.Column([
                 ft.Container(height=12),
                 ft.Row([link_input, gen_btn], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
@@ -6545,7 +6660,6 @@ class TempMailApp:
         """文本工具：字数统计、大小写转换、去空格、反转"""
         self._hide_navbar()
         self.content.controls.clear()
-        self.content.scroll = ft.ScrollMode.AUTO
         self._feature_page_header("文本工具")
         text_input = ft.TextField(
             label="输入或粘贴文本", multiline=True, min_lines=4, max_lines=8, expand=True,
@@ -6608,7 +6722,7 @@ class TempMailApp:
             if text_input.value:
                 self._copy_text(text_input.value, "已复制")
 
-        self.content.controls.append(ft.Container(
+        self._feature_content.controls.append(ft.Container(
             content=ft.Column([
                 ft.Container(height=12),
                 text_input,
@@ -6688,7 +6802,7 @@ class TempMailApp:
                 color=ft.colors.with_opacity(0.3, THEME_COLOR), offset=ft.Offset(0, 4)),
         )
         
-        self.content.controls.append(ft.Container(
+        self._feature_content.controls.append(ft.Container(
             content=ft.Column([
                 ft.Container(height=16),
                 # 密码长度
@@ -6720,7 +6834,6 @@ class TempMailApp:
         """问题反馈：填写反馈内容后提交到反馈群"""
         self._hide_navbar()
         self.content.controls.clear()
-        self.content.scroll = ft.ScrollMode.AUTO
         self._feature_page_header("问题反馈")
         
         # 反馈类型
@@ -6841,7 +6954,7 @@ class TempMailApp:
                 color=ft.colors.with_opacity(0.3, THEME_COLOR), offset=ft.Offset(0, 4)),
         )
         
-        self.content.controls.append(ft.Container(
+        self._feature_content.controls.append(ft.Container(
             content=ft.Column([
                 ft.Container(height=16),
                 # 说明卡片
@@ -6878,7 +6991,6 @@ class TempMailApp:
         """颜色工具：颜色拾取 + 屏幕取色（合并页面）"""
         self._hide_navbar()
         self.content.controls.clear()
-        self.content.scroll = ft.ScrollMode.AUTO
         self._feature_page_header("颜色工具")
 
         cc = {"hex": "#6366F1", "r": 99, "g": 102, "b": 241}
@@ -7003,7 +7115,7 @@ class TempMailApp:
             on_click=start_screen_pick)
 
         # ===== 组装页面 =====
-        self.content.controls.append(ft.Container(
+        self._feature_content.controls.append(ft.Container(
             content=ft.Column([
                 ft.Container(height=12),
                 # 颜色拾取区
@@ -7130,7 +7242,7 @@ class TempMailApp:
             preset_rows.append(ft.Row(items, spacing=6, alignment=ft.MainAxisAlignment.CENTER))
             preset_rows.append(ft.Container(height=6))
 
-        self.content.controls.append(ft.Container(
+        self._feature_content.controls.append(ft.Container(
             content=ft.Column([
                 ft.Container(height=12),
                 ft.Container(content=preview, alignment=ft.alignment.center),
@@ -7194,7 +7306,6 @@ class TempMailApp:
         """屏幕取色器：悬浮窗吸取屏幕任意位置颜色"""
         self._hide_navbar()
         self.content.controls.clear()
-        self.content.scroll = ft.ScrollMode.AUTO
         self._feature_page_header("屏幕取色")
 
         picked_preview = ft.Container(width=80, height=80, bgcolor="#CCCCCC", border_radius=16,
@@ -7285,7 +7396,7 @@ class TempMailApp:
             alignment=ft.alignment.center, on_click=copy_picked, ink=True,
         )
 
-        self.content.controls.append(ft.Container(
+        self._feature_content.controls.append(ft.Container(
             content=ft.Column([
                 ft.Container(height=16),
                 ft.Container(content=picked_preview, alignment=ft.alignment.center),
@@ -7511,7 +7622,7 @@ class TempMailApp:
         """显示我的资源页面"""
         self.current_folder_id = folder_id
         self.content.controls.clear()
-        self.content.scroll = ft.ScrollMode.AUTO
+        self.content.scroll = None  # 顶部标题固定
         self._hide_navbar()
         is_root = folder_id == 0
         title_text = folder_name if not is_root else "我的资源"
@@ -7536,9 +7647,8 @@ class TempMailApp:
         ))
         self.content.controls.append(ft.Container(height=1, bgcolor=self.clr_border))
         
-        content_area = ft.Column([], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER)
+        content_area = ft.Column([], spacing=0, scroll=ft.ScrollMode.AUTO, expand=True, horizontal_alignment=ft.CrossAxisAlignment.CENTER)
         self.content.controls.append(content_area)
-        self.content.controls.append(ft.Container(height=20))
         self.page.floating_action_button = None
         self.page.update()
         
@@ -8915,7 +9025,7 @@ class TempMailApp:
                     ft.Container(width=14),
                     ft.Column([
                         ft.Row([
-                            ft.Text(name or username or qq or "用户", size=18, weight=ft.FontWeight.BOLD, color=ft.colors.WHITE),
+                            self._get_colored_name_widget(name or username or qq or "用户", size=18, weight=ft.FontWeight.BOLD),
                             ft.Container(width=8),
                             role_widget,
                         ], spacing=0),
@@ -9044,6 +9154,8 @@ class TempMailApp:
             on_click=lambda e: self._open_points_page(),
         ))
 
+
+        # ---- 修改昵称颜色入口 ----
         # 未登录时显示登录入口
         if not self.current_user:
             scroll_content.controls.append(ft.Container(height=10))
@@ -9543,26 +9655,41 @@ class TempMailApp:
                         width=36, height=36, bgcolor=THEME_COLOR, border_radius=18,
                         alignment=ft.alignment.center)
 
+                # 判断是否是当前用户自己（只有自己显示彩色名字）
+                is_current_user = self.current_user and str(item.get("user_id", "")) == str(self.current_user.get("id", ""))
+                if is_current_user:
+                    name_widget = self._get_colored_name_widget(item_name, size=14, weight=ft.FontWeight.W_500)
+                else:
+                    name_widget = ft.Text(item_name, size=14, weight=ft.FontWeight.W_500,
+                        color=self.clr_text, overflow=ft.TextOverflow.ELLIPSIS)
+
+                # 名字+积分区域（可伸缩，超长省略），签到天数固定在右边
+                name_points_area = ft.Container(
+                    content=ft.Row([
+                        ft.Container(content=name_widget, expand=True),
+                        ft.Text(str(item_points), size=13, weight=ft.FontWeight.W_600, color=ft.colors.AMBER),
+                        ft.Container(width=1),
+                        ft.Icon(ft.icons.STARS, size=12, color=ft.colors.AMBER),
+                    ], spacing=2, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    expand=True,
+                )
+                # 签到天数（固定宽度，不被挤压）
+                checkin_badge = ft.Container(content=ft.Row([
+                    ft.Text(str(item_checkin_days), size=13, weight=ft.FontWeight.BOLD, color=THEME_COLOR),
+                    ft.Container(width=1),
+                    ft.Icon(ft.icons.EVENT_AVAILABLE, size=12, color=THEME_COLOR),
+                ], spacing=0), bgcolor=ft.colors.with_opacity(0.1, THEME_COLOR),
+                    border_radius=8, padding=ft.padding.symmetric(horizontal=6, vertical=3))
+
                 scroll_content.controls.append(ft.Container(
                     content=ft.Row([
                         rank_widget,
                         ft.Container(width=8),
                         avatar_widget,
                         ft.Container(width=10),
-                        ft.Text(item_name, size=14, expand=True, color=self.clr_text,
-                            weight=ft.FontWeight.W_500),
-                        # 积分（展示用）
-                        ft.Text(str(item_points), size=13, weight=ft.FontWeight.W_600, color=ft.colors.AMBER),
-                        ft.Container(width=1),
-                        ft.Icon(ft.icons.STARS, size=12, color=ft.colors.AMBER),
+                        name_points_area,
                         ft.Container(width=8),
-                        # 签到天数（排行依据）
-                        ft.Container(content=ft.Row([
-                            ft.Text(str(item_checkin_days), size=13, weight=ft.FontWeight.BOLD, color=THEME_COLOR),
-                            ft.Container(width=1),
-                            ft.Icon(ft.icons.EVENT_AVAILABLE, size=12, color=THEME_COLOR),
-                        ], spacing=0), bgcolor=ft.colors.with_opacity(0.1, THEME_COLOR),
-                            border_radius=8, padding=ft.padding.symmetric(horizontal=6, vertical=3)),
+                        checkin_badge,
                     ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
                     bgcolor=self.clr_card, border_radius=12, padding=ft.padding.symmetric(horizontal=12, vertical=10),
                     margin=ft.margin.only(16, 2, 16, 2),
@@ -9597,6 +9724,23 @@ class TempMailApp:
                         content=ft.Text(my_avatar_text, size=14, weight=ft.FontWeight.BOLD, color=ft.colors.WHITE),
                         width=36, height=36, bgcolor=THEME_COLOR, border_radius=18,
                         alignment=ft.alignment.center)
+                # 我的排名行（当前用户，显示彩色名字）
+                my_name_widget = self._get_colored_name_widget(my_name_display, size=14, weight=ft.FontWeight.W_600)
+                my_name_points = ft.Container(
+                    content=ft.Row([
+                        ft.Container(content=my_name_widget, expand=True),
+                        ft.Text(str(my_points_display), size=13, weight=ft.FontWeight.W_600, color=THEME_COLOR),
+                        ft.Container(width=1),
+                        ft.Icon(ft.icons.STARS, size=12, color=THEME_COLOR),
+                    ], spacing=2, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    expand=True,
+                )
+                my_checkin_badge = ft.Container(content=ft.Row([
+                    ft.Text(str(my_checkin_days), size=13, weight=ft.FontWeight.BOLD, color=THEME_COLOR),
+                    ft.Container(width=1),
+                    ft.Icon(ft.icons.EVENT_AVAILABLE, size=12, color=THEME_COLOR),
+                ], spacing=0), bgcolor=ft.colors.with_opacity(0.15, THEME_COLOR),
+                    border_radius=8, padding=ft.padding.symmetric(horizontal=6, vertical=3))
                 scroll_content.controls.append(ft.Container(
                     content=ft.Row([
                         ft.Container(content=ft.Text(str(my_rank_num), size=14, weight=ft.FontWeight.W_600,
@@ -9604,20 +9748,9 @@ class TempMailApp:
                         ft.Container(width=8),
                         my_avatar,
                         ft.Container(width=10),
-                        ft.Text(my_name_display, size=14, expand=True, color=THEME_COLOR,
-                            weight=ft.FontWeight.W_600),
-                        # 我的积分
-                        ft.Text(str(my_points_display), size=13, weight=ft.FontWeight.W_600, color=THEME_COLOR),
-                        ft.Container(width=1),
-                        ft.Icon(ft.icons.STARS, size=12, color=THEME_COLOR),
+                        my_name_points,
                         ft.Container(width=8),
-                        # 我的签到天数
-                        ft.Container(content=ft.Row([
-                            ft.Text(str(my_checkin_days), size=13, weight=ft.FontWeight.BOLD, color=THEME_COLOR),
-                            ft.Container(width=1),
-                            ft.Icon(ft.icons.EVENT_AVAILABLE, size=12, color=THEME_COLOR),
-                        ], spacing=0), bgcolor=ft.colors.with_opacity(0.15, THEME_COLOR),
-                            border_radius=8, padding=ft.padding.symmetric(horizontal=6, vertical=3)),
+                        my_checkin_badge,
                     ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
                     bgcolor=ft.colors.BLUE_50, border_radius=12,
                     padding=ft.padding.symmetric(horizontal=12, vertical=10),
@@ -9763,6 +9896,47 @@ class TempMailApp:
         except Exception as e:
             print(f"加载购买记录失败: {e}")
 
+
+    # ========== 昵称颜色相关 ==========
+    def _get_purchased_name_colors(self):
+        """获取已购买的昵称颜色列表"""
+        return self.data.get("purchased_name_colors", [])
+
+    def _get_active_name_color(self):
+        """获取当前激活的昵称颜色key"""
+        return self.data.get("active_name_color", None)
+
+    def _set_active_name_color(self, color_key):
+        """设置激活的昵称颜色"""
+        self.data["active_name_color"] = color_key
+        save_data(self.data)
+
+    def _add_purchased_name_color(self, color_key):
+        """添加已购买的昵称颜色"""
+        purchased = self._get_purchased_name_colors()
+        if color_key not in purchased:
+            purchased.append(color_key)
+            self.data["purchased_name_colors"] = purchased
+            save_data(self.data)
+
+    def _get_colored_name_widget(self, name, size=14, weight=None):
+        """获取带颜色的昵称Text控件（彩色名字用多字符渐变）"""
+        if not name:
+            return ft.Text("", size=size)
+        active = self._get_active_name_color()
+        if not active or active not in self.NAME_COLORS:
+            return ft.Text(name, size=size, weight=weight, color=self.clr_text)
+        color_cfg = self.NAME_COLORS[active]
+        if color_cfg["color"] == "rainbow":
+            # 彩色：每个字不同颜色
+            chars = []
+            for i, ch in enumerate(name):
+                c = self.RAINBOW_COLORS[i % len(self.RAINBOW_COLORS)]
+                chars.append(ft.Text(ch, size=size, weight=weight, color=c))
+            return ft.Row(chars, spacing=0, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+        else:
+            return ft.Text(name, size=size, weight=weight, color=color_cfg["color"])
+
     def _get_cloud_drive_limit(self):
         """获取用户可创建的网盘数量（默认1个，每购买一次+1）"""
         # 优先从API缓存获取
@@ -9799,7 +9973,7 @@ class TempMailApp:
         """积分商城页面"""
         self._hide_navbar()
         self.content.controls.clear()
-        self.content.scroll = ft.ScrollMode.AUTO
+        self.content.scroll = None  # 顶部标题固定，只有内容区滚动
         self.page.floating_action_button = None
 
         # 顶部标题栏
@@ -9891,6 +10065,81 @@ class TempMailApp:
             margin=ft.margin.only(16, 2, 16, 6),
         ))
 
+
+        # 昵称颜色商品
+        scroll_content.controls.append(ft.Container(
+            content=ft.Row([
+                ft.Container(width=3, height=12, bgcolor=ft.colors.PINK, border_radius=2),
+                ft.Container(width=6),
+                ft.Text("昵称颜色", size=13, color=self.clr_text2, weight=ft.FontWeight.W_600),
+            ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.padding.only(20, 10, 20, 6),
+        ))
+
+        for color_key, color_cfg in self.NAME_COLORS.items():
+            purchased = color_key in self._get_purchased_name_colors()
+            can_buy = (not purchased) and my_points >= color_cfg["points"]
+            is_active = self._get_active_name_color() == color_key
+
+            # 颜色预览
+            if color_cfg["color"] == "rainbow":
+                preview_chars = []
+                for i, ch in enumerate("彩色"):
+                    c = self.RAINBOW_COLORS[i % len(self.RAINBOW_COLORS)]
+                    preview_chars.append(ft.Text(ch, size=16, weight=ft.FontWeight.BOLD, color=c))
+                color_preview = ft.Row(preview_chars, spacing=0)
+            else:
+                color_preview = ft.Text("昵称", size=16, weight=ft.FontWeight.BOLD, color=color_cfg["color"])
+
+            # 按钮状态
+            if purchased and is_active:
+                btn_text = "使用中"
+                btn_bg = ft.colors.GREEN
+                btn_click = None
+            elif purchased:
+                btn_text = "使用"
+                btn_bg = THEME_COLOR
+                btn_click = lambda e, k=color_key: self._activate_name_color(k)
+            else:
+                btn_text = "立即兑换"
+                btn_bg = THEME_COLOR if can_buy else ft.colors.GREY_300
+                btn_click = lambda e, k=color_key: self._purchase_name_color(k) if can_buy else None
+
+            scroll_content.controls.append(ft.Container(
+                content=ft.Column([
+                    ft.Row([
+                        ft.Container(content=ft.Icon(color_cfg["icon"], size=24, color=ft.colors.WHITE),
+                            width=44, height=44,
+                            bgcolor=color_cfg["color"] if color_cfg["color"] != "rainbow" else ft.colors.PURPLE,
+                            border_radius=12, alignment=ft.alignment.center),
+                        ft.Container(width=12),
+                        ft.Column([
+                            ft.Text(color_cfg["name"], size=15, weight=ft.FontWeight.W_600, color=self.clr_text),
+                            ft.Container(height=2),
+                            color_preview,
+                        ], spacing=0, expand=True),
+                    ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    ft.Container(height=10),
+                    ft.Row([
+                        ft.Container(content=ft.Row([
+                            ft.Icon(ft.icons.STARS, size=14, color=ft.colors.AMBER),
+                            ft.Container(width=2),
+                            ft.Text(str(color_cfg["points"]), size=16, weight=ft.FontWeight.BOLD, color=ft.colors.AMBER),
+                        ], spacing=0), expand=True),
+                        ft.Container(
+                            content=ft.Text(btn_text, size=13, weight=ft.FontWeight.W_600,
+                                color=ft.colors.WHITE if (can_buy or purchased) else ft.colors.GREY_400),
+                            bgcolor=btn_bg,
+                            border_radius=10, padding=ft.padding.symmetric(horizontal=16, vertical=7),
+                            on_click=btn_click,
+                            ink=True if (can_buy or purchased) else False,
+                        ),
+                    ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ], spacing=0),
+                bgcolor=self.clr_card, border_radius=14, padding=14,
+                margin=ft.margin.only(16, 2, 16, 6),
+            ))
+
         # 说明
         scroll_content.controls.append(ft.Container(
             content=ft.Text("兑换后立即到账，积分不可退还", size=11,
@@ -9922,13 +10171,11 @@ class TempMailApp:
                     body={"user_id": str(user_id), "item": "cloud_drive_slot",
                           "item_name": "网盘创建权限", "points": 50})
                 if ok and isinstance(result, dict) and result.get("ok"):
-                    # 购买成功：清除本地消费记录（API已真实扣除），刷新缓存
-                    if "consumed_points" in self.settings:
-                        self.settings["consumed_points"] = 0
-                        save_settings(self.settings)
-                    self._points_cache = None
+                    # 购买成功：直接从缓存扣减积分（避免清空缓存导致显示0）
+                    if isinstance(self._points_cache, dict) and "points" in self._points_cache:
+                        self._points_cache["points"] = max(0, self._points_cache["points"] - 50)
                     self._purchases_cache = None
-                    # 后台重新加载积分和购买记录
+                    # 后台重新加载购买记录
                     threading.Thread(target=self._load_purchases, daemon=True).start()
                     def on_success():
                         self._show_toast("兑换成功！网盘权限+1", "success")
@@ -9943,6 +10190,212 @@ class TempMailApp:
                 self.page.run_thread(lambda: self._show_toast("兑换失败: " + str(e)[:15], "error"))
 
         threading.Thread(target=purchase_thread, daemon=True).start()
+
+
+    def _purchase_name_color(self, color_key):
+        """购买昵称颜色"""
+        if not self.current_user:
+            self._show_toast("请先登录", "warning")
+            return
+        if color_key not in self.NAME_COLORS:
+            return
+        color_cfg = self.NAME_COLORS[color_key]
+        my_points = self._get_display_points()
+        if my_points < color_cfg["points"]:
+            self._show_toast(f"积分不足，需要{color_cfg['points']}积分", "error")
+            return
+
+        self._show_toast("正在兑换...", "info")
+
+        def purchase_thread():
+            try:
+                user_id = self.current_user.get("id", "")
+                ok, result = self._remote_api_request("POST", "points-purchase",
+                    body={"user_id": str(user_id), "item": f"name_color_{color_key}",
+                          "item_name": color_cfg["name"], "points": color_cfg["points"]})
+                if ok and isinstance(result, dict) and result.get("ok"):
+                    # 购买成功：直接从缓存扣减积分（避免清空缓存导致显示0）
+                    if isinstance(self._points_cache, dict) and "points" in self._points_cache:
+                        self._points_cache["points"] = max(0, self._points_cache["points"] - color_cfg["points"])
+                    self._purchases_cache = None
+                    self._add_purchased_name_color(color_key)
+                    self._set_active_name_color(color_key)
+                    threading.Thread(target=self._load_purchases, daemon=True).start()
+                    def on_success():
+                        self._show_toast(f"兑换成功！{color_cfg['name']}已激活", "success")
+                        self.render_points_shop()
+                    self.page.run_thread(on_success)
+                else:
+                    msg = "兑换失败"
+                    if isinstance(result, dict):
+                        msg = result.get("msg", "兑换失败")
+                    self.page.run_thread(lambda: self._show_toast(msg, "error"))
+            except Exception as e:
+                self.page.run_thread(lambda: self._show_toast("兑换失败: " + str(e)[:15], "error"))
+
+        threading.Thread(target=purchase_thread, daemon=True).start()
+
+    def _activate_name_color(self, color_key):
+        """激活已购买的昵称颜色（None表示恢复默认颜色）"""
+        if color_key is not None and color_key not in self._get_purchased_name_colors():
+            self._show_toast("请先兑换该颜色", "warning")
+            return
+        self._set_active_name_color(color_key)
+        self._show_toast("昵称颜色已切换", "success")
+        # 刷新当前页面
+        if hasattr(self, '_name_color_page_active') and self._name_color_page_active:
+            self.render_name_color_page()
+
+    def render_name_color_page(self):
+        """昵称颜色设置页面"""
+        self._name_color_page_active = True
+        self._hide_navbar()
+        self.content.controls.clear()
+        self.content.scroll = None  # 顶部标题固定，只有内容区滚动
+        self.page.floating_action_button = None
+
+        # 顶部标题栏
+        self.content.controls.append(ft.Container(
+            content=ft.Row([
+                ft.IconButton(ft.icons.ARROW_BACK, icon_size=22,
+                    on_click=lambda e: self._close_name_color_page()),
+                ft.Text("修改昵称颜色", size=20, weight=ft.FontWeight.BOLD, expand=True, color=self.clr_text),
+            ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.padding.only(8, 45, 12, 8),
+            bgcolor=self.clr_bg,
+        ))
+        self.content.controls.append(ft.Container(height=1, bgcolor=self.clr_border))
+
+        scroll_content = ft.Column([], spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
+
+        # 当前昵称预览
+        if self.current_user:
+            username = self.current_user.get("username", "")
+            name = self.current_user.get("name", username)
+            preview_widget = self._get_colored_name_widget(name, size=22, weight=ft.FontWeight.BOLD)
+            scroll_content.controls.append(ft.Container(
+                content=ft.Column([
+                    ft.Text("当前昵称预览", size=12, color=self.clr_text2),
+                    ft.Container(height=8),
+                    ft.Row([preview_widget], alignment=ft.MainAxisAlignment.CENTER, spacing=0),
+                ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER, alignment=ft.MainAxisAlignment.CENTER),
+                bgcolor=self.clr_card, border_radius=14, padding=16,
+                margin=ft.margin.only(16, 12, 16, 6),
+                alignment=ft.alignment.center,
+            ))
+
+        # 颜色列表标题
+        scroll_content.controls.append(ft.Container(
+            content=ft.Row([
+                ft.Container(width=3, height=12, bgcolor=ft.colors.PINK, border_radius=2),
+                ft.Container(width=6),
+                ft.Text("选择颜色", size=13, color=self.clr_text2, weight=ft.FontWeight.W_600),
+            ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.padding.only(20, 10, 20, 6),
+        ))
+
+        # 默认颜色
+        active = self._get_active_name_color()
+        default_active = active is None
+        scroll_content.controls.append(ft.Container(
+            content=ft.Row([
+                ft.Container(content=ft.Icon(ft.icons.TEXT_FIELDS, size=22, color=ft.colors.WHITE),
+                    width=44, height=44, bgcolor=ft.colors.GREY_600, border_radius=12,
+                    alignment=ft.alignment.center),
+                ft.Container(width=12),
+                ft.Column([
+                    ft.Text("默认颜色", size=15, weight=ft.FontWeight.W_600, color=self.clr_text),
+                    ft.Container(height=2),
+                    ft.Text("恢复原始昵称颜色", size=11, color=self.clr_text2),
+                ], spacing=0, expand=True),
+                ft.TextButton("使用中" if default_active else "使用",
+                    style=ft.ButtonStyle(
+                        color=ft.colors.WHITE,
+                        bgcolor=ft.colors.GREEN if default_active else THEME_COLOR,
+                        shape=ft.RoundedRectangleBorder(radius=10),
+                        padding=ft.padding.symmetric(horizontal=16, vertical=7),
+                    ),
+                    on_click=lambda e: self._activate_name_color(None) if not default_active else None,
+                    disabled=default_active,
+                ),
+            ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            bgcolor=self.clr_card, border_radius=14, padding=14,
+            margin=ft.margin.only(16, 2, 16, 6),
+        ))
+
+        # 已购买的颜色
+        for color_key, color_cfg in self.NAME_COLORS.items():
+            purchased = color_key in self._get_purchased_name_colors()
+            is_active = active == color_key
+
+            if color_cfg["color"] == "rainbow":
+                preview_chars = []
+                for i, ch in enumerate("彩色昵称"):
+                    c = self.RAINBOW_COLORS[i % len(self.RAINBOW_COLORS)]
+                    preview_chars.append(ft.Text(ch, size=14, weight=ft.FontWeight.BOLD, color=c))
+                color_preview = ft.Row(preview_chars, spacing=0)
+            else:
+                color_preview = ft.Text("彩色昵称", size=14, weight=ft.FontWeight.BOLD, color=color_cfg["color"])
+
+            if not purchased:
+                # 未购买：灰色显示，提示去积分商城
+                scroll_content.controls.append(ft.Container(
+                    content=ft.Row([
+                        ft.Container(content=ft.Icon(color_cfg["icon"], size=22, color=ft.colors.GREY_400),
+                            width=44, height=44, bgcolor=ft.colors.GREY_200, border_radius=12,
+                            alignment=ft.alignment.center),
+                        ft.Container(width=12),
+                        ft.Column([
+                            ft.Text(color_cfg["name"], size=15, weight=ft.FontWeight.W_600, color=ft.colors.GREY_500),
+                            ft.Container(height=2),
+                            ft.Text(f"需{color_cfg['points']}积分兑换", size=11, color=ft.colors.GREY_400),
+                        ], spacing=0, expand=True),
+                        ft.Container(
+                            content=ft.Text("去兑换", size=13, weight=ft.FontWeight.W_600, color=THEME_COLOR),
+                            on_click=lambda e: self.render_points_shop(),
+                            ink=True,
+                        ),
+                    ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    bgcolor=self.clr_card, border_radius=14, padding=14,
+                    margin=ft.margin.only(16, 2, 16, 6),
+                    opacity=0.6,
+                ))
+            else:
+                scroll_content.controls.append(ft.Container(
+                    content=ft.Row([
+                        ft.Container(content=ft.Icon(color_cfg["icon"], size=22, color=ft.colors.WHITE),
+                            width=44, height=44,
+                            bgcolor=color_cfg["color"] if color_cfg["color"] != "rainbow" else ft.colors.PURPLE,
+                            border_radius=12, alignment=ft.alignment.center),
+                        ft.Container(width=12),
+                        ft.Column([
+                            ft.Text(color_cfg["name"], size=15, weight=ft.FontWeight.W_600, color=self.clr_text),
+                            ft.Container(height=2),
+                            color_preview,
+                        ], spacing=0, expand=True),
+                        ft.TextButton("使用中" if is_active else "使用",
+                            style=ft.ButtonStyle(
+                                color=ft.colors.WHITE,
+                                bgcolor=ft.colors.GREEN if is_active else THEME_COLOR,
+                                shape=ft.RoundedRectangleBorder(radius=10),
+                                padding=ft.padding.symmetric(horizontal=16, vertical=7),
+                            ),
+                            on_click=lambda e, k=color_key: self._activate_name_color(k) if not is_active else None,
+                            disabled=is_active,
+                        ),
+                    ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    bgcolor=self.clr_card, border_radius=14, padding=14,
+                    margin=ft.margin.only(16, 2, 16, 6),
+                ))
+
+        scroll_content.controls.append(ft.Container(height=20))
+        self.content.controls.append(scroll_content)
+        self.page.update()
+
+    def _close_name_color_page(self):
+        """关闭昵称颜色页面，返回个人主页"""
+        self._name_color_page_active = False
+        self.show_user_profile()
 
     # ========== 设置页面 ==========
     def render_settings_page(self):
@@ -10122,7 +10575,7 @@ class TempMailApp:
                     return p
             return candidate_paths[0]
         
-        local_icon_path = _find_asset_path("cute_email_icon.png")
+        local_icon_path = _find_asset_path("default_icon.png")
         qq_icon_path = _find_asset_path("qq_email_icon.png")
         netease_icon_path = _find_asset_path("netease_email_icon.png")
         gmail_icon_path = _find_asset_path("gmail_icon.png")
@@ -10304,9 +10757,9 @@ class TempMailApp:
                 return user_icon
             # 尝试多种默认图标路径
             candidate_paths = [
-                os.path.join(_base_dir, "assets", "cute_email_icon.png"),
-                os.path.join(os.getcwd(), "assets", "cute_email_icon.png"),
-                "assets/cute_email_icon.png",
+                os.path.join(_base_dir, "assets", "default_icon.png"),
+                os.path.join(os.getcwd(), "assets", "default_icon.png"),
+                "assets/default_icon.png",
             ]
             for path in candidate_paths:
                 if os.path.exists(path):
@@ -10722,7 +11175,7 @@ class TempMailApp:
         """登录设备页面：当前设备信息 + 历史登录记录"""
         self._hide_navbar()
         self.content.controls.clear()
-        self.content.scroll = ft.ScrollMode.AUTO
+        self.content.scroll = None  # 顶部标题固定
         self.page.floating_action_button = None
 
         # 顶部标题栏
@@ -11246,7 +11699,7 @@ class TempMailApp:
                 ft.Row([big_avatar], alignment=ft.MainAxisAlignment.CENTER),
                 ft.Container(height=12),
                 ft.Row([
-                    ft.Text(name or username or "用户", size=20, weight=ft.FontWeight.BOLD, color=ft.colors.WHITE),
+                    self._get_colored_name_widget(name or username or "用户", size=20, weight=ft.FontWeight.BOLD),
                     ft.Container(width=8),
                     role_badge,
                 ], alignment=ft.MainAxisAlignment.CENTER, spacing=0),
@@ -11296,6 +11749,39 @@ class TempMailApp:
                 content=ft.Row(row_content, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 bgcolor=self.clr_card, border_radius=12, padding=14,
                 margin=ft.margin.only(16, 2, 16, 2),
+            ))
+
+        # 修改昵称颜色（账户信息里昵称下面）
+        if self.current_user:
+            active_color = self._get_active_name_color()
+            if active_color and active_color in self.NAME_COLORS:
+                color_cfg = self.NAME_COLORS[active_color]
+                if color_cfg["color"] == "rainbow":
+                    color_label = "彩色"
+                    color_icon_bg = ft.colors.PURPLE
+                else:
+                    color_label = color_cfg["name"].replace("名字", "")
+                    color_icon_bg = color_cfg["color"]
+            else:
+                color_label = "默认"
+                color_icon_bg = ft.colors.GREY_600
+            scroll_content.controls.append(ft.Container(
+                content=ft.Row([
+                    ft.Container(content=ft.Icon(ft.icons.COLOR_LENS, size=20, color=ft.colors.WHITE),
+                        width=36, height=36, bgcolor=color_icon_bg,
+                        border_radius=10, alignment=ft.alignment.center),
+                    ft.Container(width=12),
+                    ft.Column([
+                        ft.Text("修改昵称颜色", size=14, weight=ft.FontWeight.W_600, color=self.clr_text),
+                        ft.Container(height=1),
+                        ft.Text("当前：" + color_label, size=11, color=self.clr_text2),
+                    ], spacing=0, expand=True),
+                    ft.Icon(ft.icons.CHEVRON_RIGHT, size=18, color=self.clr_text3),
+                ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                bgcolor=self.clr_card, border_radius=12, padding=14,
+                margin=ft.margin.only(16, 2, 16, 2),
+                on_click=lambda e: self.render_name_color_page(),
+                ink=True,
             ))
 
         # 数据统计
