@@ -47,11 +47,11 @@ jobs:
       - name: Build iOS IPA
         run: |
           echo "=== Building iOS IPA ==="
-          echo "Product: YoXi邮箱"
+          echo "Product: YoXi网盘"
           echo "Project: yoxi_email"
           echo "Org: com.yoxi"
           echo "Template: ./flet-template (with 3D email icon)"
-          flet build --verbose ipa --product "YoXi邮箱" --project "yoxi_email" --org "com.yoxi" --template "./flet-template" 2>&1 | tee build_log.txt
+          flet build --verbose ipa --product "YoXi网盘" --project "yoxi_email" --org "com.yoxi" --template "./flet-template" 2>&1 | tee build_log.txt
           BUILD_EXIT=${PIPESTATUS[0]}
           echo "=== Build exit code: $BUILD_EXIT ==="
           exit $BUILD_EXIT
@@ -86,7 +86,7 @@ jobs:
               cp -R "$APP_PATH" Payload/
               
               # 压缩为 IPA
-              IPA_NAME="YoXi邮箱.ipa"
+              IPA_NAME="YoXi网盘.ipa"
               zip -r "output/$IPA_NAME" Payload/
               
               echo ""
